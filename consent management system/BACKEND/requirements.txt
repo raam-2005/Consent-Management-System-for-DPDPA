@@ -1,0 +1,14 @@
+# Django Core
+Django>=4.2,<5.0
+
+# Django REST Framework
+djangorestframework>=3.14.0
+
+# JWT Authentication
+djangorestframework-simplejwt>=5.3.0
+
+# CORS Headers (for React frontend)
+django-cors-headers>=4.3.0
+
+# Environment variables
+python-dotenv>=1.0.0
