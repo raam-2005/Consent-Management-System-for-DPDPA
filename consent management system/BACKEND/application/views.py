@@ -15,7 +15,6 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action, api_view, permission_classes as perm_classes
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny, BasePermission
-from rest_framework.exceptions import PermissionDenied
 from django.utils import timezone
 from django.db.models import Count, Q
 from datetime import timedelta
@@ -391,49 +390,6 @@ class ConsentRequestViewSet(viewsets.ModelViewSet):
         # Principals see requests to them
         return base_qs.filter(principal=user)
     
-    def perform_create(self, serializer):
-        """Auto-assign fiduciary from authenticated user"""
-        user = self.request.user
-        
-        # Only fiduciaries can create consent requests
-        if user.role != RoleChoices.FIDUCIARY:
-            raise PermissionDenied("Only Data Fiduciaries can create consent requests")
-        
-        # Auto-assign fiduciary if not provided
-        consent_request = serializer.save(fiduciary=user)
-        
-        # Create audit log
-        AuditLog.objects.create(
-            user=user,
-            action=AuditActionChoices.CONSENT_REQUESTED,
-            entity_type='consent_request',
-            entity_id=str(consent_request.id),
-            details={
-                'principal_id': str(consent_request.principal_id),
-                'purpose_id': str(consent_request.purpose_id) if consent_request.purpose_id else None
-            }
-        )
-    
-    @action(detail=False, methods=['get'], url_path='lookup-principal')
-    def lookup_principal(self, request):
-        """Lookup a principal user by email (Fiduciary only)"""
-        if request.user.role != RoleChoices.FIDUCIARY:
-            return api_error_response('Not authorized', status_code=status.HTTP_403_FORBIDDEN)
-        
-        email = request.query_params.get('email', '').strip()
-        if not email:
-            return api_error_response('Email parameter is required', error_code='MISSING_EMAIL')
-        
-        try:
-            principal = User.objects.get(email=email, role=RoleChoices.PRINCIPAL)
-            return Response({
-                'id': str(principal.id),
-                'email': principal.email,
-                'full_name': principal.full_name
-            })
-        except User.DoesNotExist:
-            return api_error_response('Principal not found with this email', error_code='PRINCIPAL_NOT_FOUND', status_code=status.HTTP_404_NOT_FOUND)
-
     @action(detail=False, methods=['get'], url_path='principal/(?P<principal_id>[^/.]+)')
     def by_principal(self, request, principal_id=None):
         """Get consent requests by principal"""
@@ -531,46 +487,34 @@ class ConsentRequestViewSet(viewsets.ModelViewSet):
     
     @action(detail=True, methods=['post'])
     def cms_deny(self, request, pk=None):
-        """CMS denies a consent request (Processor/DPO only)"""
-        if request.user.role not in [RoleChoices.PROCESSOR, RoleChoices.DPO]:
-            return api_error_response('Not authorized', status_code=status.HTTP_403_FORBIDDEN)
+        """CMS denies a consent request"""
+        consent_request = self.get_object()
         
-        try:
-            consent_request = self.get_object()
-            
-            if consent_request.cms_status != CMSStatusChoices.PENDING_CMS:
-                return api_error_response(
-                    'Request has already been reviewed',
-                    error_code='ALREADY_REVIEWED'
-                )
-            
-            with transaction.atomic():
-                consent_request.cms_status = CMSStatusChoices.CMS_DENIED
-                consent_request.status = ConsentStatusChoices.REJECTED
-                consent_request.cms_reviewed_at = timezone.now()
-                consent_request.cms_reviewed_by = request.user
-                consent_request.cms_notes = sanitize_text(request.data.get('notes', ''))
-                consent_request.responded_at = timezone.now()
-                consent_request.save()
-                
-                # Create audit log
-                create_audit_log(
-                    request=request,
-                    action=AuditActionChoices.CONSENT_REJECTED,
-                    entity_type='consent_request',
-                    entity_id=str(consent_request.id),
-                    details={'action': 'cms_denied', 'notes': consent_request.cms_notes}
-                )
-            
-            serializer = ConsentRequestSerializer(consent_request)
-            return Response(serializer.data)
-            
-        except Exception as e:
-            logger.error(f"Error in CMS deny: {e}")
-            return api_error_response(
-                'Failed to deny request',
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        if consent_request.cms_status != CMSStatusChoices.PENDING_CMS:
+            return Response(
+                {'error': 'Request has already been reviewed'},
+                status=status.HTTP_400_BAD_REQUEST
             )
+        
+        consent_request.cms_status = CMSStatusChoices.CMS_DENIED
+        consent_request.status = ConsentStatusChoices.REJECTED
+        consent_request.cms_reviewed_at = timezone.now()
+        consent_request.cms_reviewed_by_id = request.data.get('reviewer_id')
+        consent_request.cms_notes = request.data.get('notes', '')
+        consent_request.responded_at = timezone.now()
+        consent_request.save()
+        
+        # Create audit log
+        AuditLog.objects.create(
+            user_id=request.data.get('reviewer_id'),
+            action='consent_rejected',
+            entity_type='consent_request',
+            entity_id=str(consent_request.id),
+            details={'action': 'cms_denied', 'notes': consent_request.cms_notes}
+        )
+        
+        serializer = ConsentRequestSerializer(consent_request)
+        return Response(serializer.data)
     
     @action(detail=True, methods=['post'])
     def accept(self, request, pk=None):
@@ -836,7 +780,7 @@ class ConsentViewSet(viewsets.ModelViewSet):
                 # Create audit log
                 AuditLog.objects.create(
                     user=consent.principal,
-                    action=AuditActionChoices.CONSENT_ENABLED,
+                    action='consent_enabled',
                     entity_type='consent',
                     entity_id=str(consent.id),
                     details={'re_enabled_at': timezone.now().isoformat()}
@@ -890,7 +834,7 @@ class ConsentViewSet(viewsets.ModelViewSet):
                 # Create audit log
                 AuditLog.objects.create(
                     user=consent.principal,
-                    action=AuditActionChoices.CONSENT_WITHDRAWN,
+                    action='consent_withdrawn',
                     entity_type='consent',
                     entity_id=str(consent.id),
                     details={'reason': reason}

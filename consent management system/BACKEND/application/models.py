@@ -72,13 +72,9 @@ class AuditActionChoices(models.TextChoices):
     DATA_CORRECTED = 'data_corrected', 'Data Corrected'
     DATA_DELETED = 'data_deleted', 'Data Deleted'
     DATA_EXPORTED = 'data_exported', 'Data Exported'
-    CONSENT_REQUESTED = 'consent_requested', 'Consent Requested'
-    CONSENT_WITHDRAWN = 'consent_withdrawn', 'Consent Withdrawn'
-    CONSENT_ENABLED = 'consent_enabled', 'Consent Re-enabled'
     GRIEVANCE_RAISED = 'grievance_raised', 'Grievance Raised'
     GRIEVANCE_RESOLVED = 'grievance_resolved', 'Grievance Resolved'
     GRIEVANCE_ESCALATED = 'grievance_escalated', 'Grievance Escalated'
-    GRIEVANCE_ASSIGNED = 'grievance_assigned', 'Grievance Assigned'
     PROFILE_UPDATED = 'profile_updated', 'Profile Updated'
     RIGHTS_REQUEST_SUBMITTED = 'rights_request_submitted', 'Rights Request Submitted'
     RIGHTS_REQUEST_COMPLETED = 'rights_request_completed', 'Rights Request Completed'
@@ -504,12 +500,6 @@ class Grievance(TimestampedModel):
         blank=True,
         related_name='grievances_against',
         limit_choices_to={'role': RoleChoices.FIDUCIARY}
-    )
-    against_entity_name = models.CharField(
-        max_length=255,
-        blank=True,
-        null=True,
-        help_text="Name of the organization when no specific fiduciary user is selected"
     )
     assigned_dpo = models.ForeignKey(
         User,
