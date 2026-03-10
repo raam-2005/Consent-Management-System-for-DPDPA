@@ -72,9 +72,13 @@ class AuditActionChoices(models.TextChoices):
     DATA_CORRECTED = 'data_corrected', 'Data Corrected'
     DATA_DELETED = 'data_deleted', 'Data Deleted'
     DATA_EXPORTED = 'data_exported', 'Data Exported'
+    CONSENT_REQUESTED = 'consent_requested', 'Consent Requested'
+    CONSENT_WITHDRAWN = 'consent_withdrawn', 'Consent Withdrawn'
+    CONSENT_ENABLED = 'consent_enabled', 'Consent Re-enabled'
     GRIEVANCE_RAISED = 'grievance_raised', 'Grievance Raised'
     GRIEVANCE_RESOLVED = 'grievance_resolved', 'Grievance Resolved'
     GRIEVANCE_ESCALATED = 'grievance_escalated', 'Grievance Escalated'
+    GRIEVANCE_ASSIGNED = 'grievance_assigned', 'Grievance Assigned'
     PROFILE_UPDATED = 'profile_updated', 'Profile Updated'
     RIGHTS_REQUEST_SUBMITTED = 'rights_request_submitted', 'Rights Request Submitted'
     RIGHTS_REQUEST_COMPLETED = 'rights_request_completed', 'Rights Request Completed'
@@ -501,6 +505,12 @@ class Grievance(TimestampedModel):
         related_name='grievances_against',
         limit_choices_to={'role': RoleChoices.FIDUCIARY}
     )
+    against_entity_name = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        help_text="Name of the organization when no specific fiduciary user is selected"
+    )
     assigned_dpo = models.ForeignKey(
         User,
         on_delete=models.SET_NULL,
@@ -849,4 +859,132 @@ class DataPrincipalRightsRequest(TimestampedModel):
         if self.sla_deadline:
             return timezone.now() > self.sla_deadline
         return False
+
+
+# ============================================
+# NOTIFICATION TYPE CHOICES
+# ============================================
+class NotificationTypeChoices(models.TextChoices):
+    """Types of in-app notifications"""
+    CONSENT_REQUEST = 'consent_request', 'New Consent Request'
+    CONSENT_APPROVED = 'consent_approved', 'Consent Approved'
+    CONSENT_REJECTED = 'consent_rejected', 'Consent Rejected'
+    CONSENT_EXPIRING = 'consent_expiring', 'Consent Expiring Soon'
+    CONSENT_EXPIRED = 'consent_expired', 'Consent Expired'
+    CONSENT_WITHDRAWN = 'consent_withdrawn', 'Consent Withdrawn'
+    GRIEVANCE_FILED = 'grievance_filed', 'Grievance Filed'
+    GRIEVANCE_ASSIGNED = 'grievance_assigned', 'Grievance Assigned'
+    GRIEVANCE_UPDATED = 'grievance_updated', 'Grievance Updated'
+    GRIEVANCE_RESOLVED = 'grievance_resolved', 'Grievance Resolved'
+    SLA_BREACH = 'sla_breach', 'SLA Breach Alert'
+    RIGHTS_REQUEST = 'rights_request', 'Data Rights Request'
+    SYSTEM_ALERT = 'system_alert', 'System Alert'
+
+
+# ============================================
+# NOTIFICATION MODEL
+# ============================================
+class Notification(TimestampedModel):
+    """
+    In-app notifications for users.
+    
+    Used to notify users about:
+    - Consent requests and updates
+    - Grievance status changes
+    - SLA breaches
+    - System alerts
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    
+    # Recipient
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='notifications'
+    )
+    
+    # Notification content
+    notification_type = models.CharField(
+        max_length=30,
+        choices=NotificationTypeChoices.choices,
+        default=NotificationTypeChoices.SYSTEM_ALERT
+    )
+    title = models.CharField(max_length=255)
+    message = models.TextField()
+    
+    # Related entity (optional)
+    entity_type = models.CharField(max_length=50, blank=True, null=True)
+    entity_id = models.UUIDField(blank=True, null=True)
+    
+    # Status
+    is_read = models.BooleanField(default=False)
+    read_at = models.DateTimeField(null=True, blank=True)
+    
+    # Action URL (optional - for frontend to navigate)
+    action_url = models.CharField(max_length=255, blank=True, null=True)
+    
+    # Priority
+    priority = models.CharField(
+        max_length=20,
+        choices=GrievancePriorityChoices.choices,
+        default=GrievancePriorityChoices.MEDIUM
+    )
+
+    class Meta:
+        db_table = 'notifications'
+        verbose_name = 'Notification'
+        verbose_name_plural = 'Notifications'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.title} - {self.user.email}"
+
+    def mark_as_read(self):
+        """Mark notification as read"""
+        if not self.is_read:
+            self.is_read = True
+            self.read_at = timezone.now()
+            self.save(update_fields=['is_read', 'read_at'])
+
+    @classmethod
+    def create_notification(cls, user, notification_type, title, message, 
+                          entity_type=None, entity_id=None, action_url=None,
+                          priority=GrievancePriorityChoices.MEDIUM):
+        """
+        Factory method to create notifications.
+        
+        Usage:
+            Notification.create_notification(
+                user=principal,
+                notification_type=NotificationTypeChoices.CONSENT_REQUEST,
+                title="New Consent Request",
+                message="You have a new consent request from Company X",
+                entity_type="consent_request",
+                entity_id=consent_request.id,
+                action_url="/consent-requests"
+            )
+        """
+        return cls.objects.create(
+            user=user,
+            notification_type=notification_type,
+            title=title,
+            message=message,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            action_url=action_url,
+            priority=priority
+        )
+
+    @classmethod
+    def get_unread_count(cls, user):
+        """Get count of unread notifications for a user"""
+        return cls.objects.filter(user=user, is_read=False).count()
+
+    @classmethod
+    def mark_all_as_read(cls, user):
+        """Mark all notifications as read for a user"""
+        cls.objects.filter(user=user, is_read=False).update(
+            is_read=True,
+            read_at=timezone.now()
+        )
 

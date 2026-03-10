@@ -1,0 +1,1366 @@
+{
+  "info": {
+    "name": "DPDPA Consent Management System API",
+    "description": "Comprehensive API collection for the DPDPA 2023 Consent Management System. Contains all endpoints for authentication, users, purposes, consents, grievances, and data principal rights management.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000/api",
+      "type": "string"
+    },
+    {
+      "key": "accessToken",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "refreshToken",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health Check",
+      "item": [
+        {
+          "name": "API Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health/",
+              "host": ["{{baseUrl}}"],
+              "path": ["health", ""]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Authentication",
+      "item": [
+        {
+          "name": "Register New User",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"testuser@example.com\",\n  \"password\": \"securePassword123\",\n  \"full_name\": \"Test User\",\n  \"role\": \"principal\",\n  \"phone\": \"9876543210\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/register/",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "register", ""]
+            }
+          }
+        },
+        {
+          "name": "Login (Get Token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.access) {",
+                  "    pm.collectionVariables.set('accessToken', jsonData.access);",
+                  "}",
+                  "if (jsonData.refresh) {",
+                  "    pm.collectionVariables.set('refreshToken', jsonData.refresh);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@example.com\",\n  \"password\": \"adminpassword\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login/",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "login", ""]
+            }
+          }
+        },
+        {
+          "name": "Refresh Token",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refresh\": \"{{refreshToken}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/refresh/",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "refresh", ""]
+            }
+          }
+        },
+        {
+          "name": "Get Current User",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me/",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "me", ""]
+            }
+          }
+        },
+        {
+          "name": "Change Password",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"old_password\": \"currentPassword\",\n  \"new_password\": \"newSecurePassword123\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/change-password/",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "change-password", ""]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Dashboard",
+      "item": [
+        {
+          "name": "Get Dashboard Stats",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/dashboard/stats/",
+              "host": ["{{baseUrl}}"],
+              "path": ["dashboard", "stats", ""]
+            }
+          }
+        },
+        {
+          "name": "Get Dashboard Stats (By Role)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/dashboard/stats/?role=principal",
+              "host": ["{{baseUrl}}"],
+              "path": ["dashboard", "stats", ""],
+              "query": [{ "key": "role", "value": "principal" }]
+            }
+          }
+        },
+        {
+          "name": "Get Compliance Dashboard",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/compliance/dashboard/",
+              "host": ["{{baseUrl}}"],
+              "path": ["compliance", "dashboard", ""]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Users",
+      "item": [
+        {
+          "name": "List All Users",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/users/",
+              "host": ["{{baseUrl}}"],
+              "path": ["users", ""]
+            }
+          }
+        },
+        {
+          "name": "Get User by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/users/:id/",
+              "host": ["{{baseUrl}}"],
+              "path": ["users", ":id", ""],
+              "variable": [{ "key": "id", "value": "user-uuid-here" }]
+            }
+          }
+        },
+        {
+          "name": "Create User",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"newuser@example.com\",\n  \"password\": \"password123\",\n  \"full_name\": \"New User\",\n  \"role\": \"principal\",\n  \"phone\": \"9876543210\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/users/",
+              "host": ["{{baseUrl}}"],
+              "path": ["users", ""]
+            }
+          }
+        },
+        {
+          "name": "Update User",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"full_name\": \"Updated Name\",\n  \"phone\": \"9999999999\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/users/:id/",
+              "host": ["{{baseUrl}}"],
+              "path": ["users", ":id", ""],
+              "variable": [{ "key": "id", "value": "user-uuid-here" }]
+            }
+          }
+        },
+        {
+          "name": "Get Users by Role",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/users/role/:role/",
+              "host": ["{{baseUrl}}"],
+              "path": ["users", "role", ":role", ""],
+              "variable": [{ "key": "role", "value": "principal" }]
+            }
+          }
+        },
+        {
+          "name": "Get All Principals",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/users/principals/",
+              "host": ["{{baseUrl}}"],
+              "path": ["users", "principals", ""]
+            }
+          }
+        },
+        {
+          "name": "Get All Fiduciaries",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/users/fiduciaries/",
+              "host": ["{{baseUrl}}"],
+              "path": ["users", "fiduciaries", ""]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Purposes",
+      "item": [
+        {
+          "name": "List All Purposes",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/purposes/",
+              "host": ["{{baseUrl}}"],
+              "path": ["purposes", ""]
+            }
+          }
+        },
+        {
+          "name": "Get Purpose by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/purposes/:id/",
+              "host": ["{{baseUrl}}"],
+              "path": ["purposes", ":id", ""],
+              "variable": [{ "key": "id", "value": "purpose-uuid-here" }]
+            }
+          }
+        },
+        {
+          "name": "Create Purpose (Fiduciary)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Marketing Communications\",\n  \"description\": \"To send promotional emails and offers\",\n  \"data_categories\": [\"email\", \"name\", \"preferences\"],\n  \"retention_period_days\": 365,\n  \"is_active\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/purposes/",
+              "host": ["{{baseUrl}}"],
+              "path": ["purposes", ""]
+            }
+          }
+        },
+        {
+          "name": "Update Purpose",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"description\": \"Updated description for the purpose\",\n  \"is_active\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/purposes/:id/",
+              "host": ["{{baseUrl}}"],
+              "path": ["purposes", ":id", ""],
+              "variable": [{ "key": "id", "value": "purpose-uuid-here" }]
+            }
+          }
+        },
+        {
+          "name": "Get Purposes by Fiduciary",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/purposes/fiduciary/:id/",
+              "host": ["{{baseUrl}}"],
+              "path": ["purposes", "fiduciary", ":id", ""],
+              "variable": [{ "key": "id", "value": "fiduciary-uuid-here" }]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Consent Requests",
+      "item": [
+        {
+          "name": "List All Consent Requests",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/consent-requests/",
+              "host": ["{{baseUrl}}"],
+              "path": ["consent-requests", ""]
+            }
+          }
+        },
+        {
+          "name": "Get Consent Request by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/consent-requests/:id/",
+              "host": ["{{baseUrl}}"],
+              "path": ["consent-requests", ":id", ""],
+              "variable": [{ "key": "id", "value": "request-uuid-here" }]
+            }
+          }
+        },
+        {
+          "name": "Create Consent Request (Fiduciary)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"principal\": \"principal-uuid-here\",\n  \"purpose\": \"purpose-uuid-here\",\n  \"data_items\": [\"email\", \"phone\", \"name\"],\n  \"expiry_date\": \"2025-12-31\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/consent-requests/",
+              "host": ["{{baseUrl}}"],
+              "path": ["consent-requests", ""]
+            }
+          }
+        },
+        {
+          "name": "Get Requests by Principal",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/consent-requests/principal/:id/",
+              "host": ["{{baseUrl}}"],
+              "path": ["consent-requests", "principal", ":id", ""],
+              "variable": [{ "key": "id", "value": "principal-uuid-here" }]
+            }
+          }
+        },
+        {
+          "name": "Get Requests by Fiduciary",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/consent-requests/fiduciary/:id/",
+              "host": ["{{baseUrl}}"],
+              "path": ["consent-requests", "fiduciary", ":id", ""],
+              "variable": [{ "key": "id", "value": "fiduciary-uuid-here" }]
+            }
+          }
+        },
+        {
+          "name": "Get Pending CMS Review",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/consent-requests/pending_cms/",
+              "host": ["{{baseUrl}}"],
+              "path": ["consent-requests", "pending_cms", ""]
+            }
+          }
+        },
+        {
+          "name": "Get Pending Principal Response",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/consent-requests/pending_principal/",
+              "host": ["{{baseUrl}}"],
+              "path": ["consent-requests", "pending_principal", ""]
+            }
+          }
+        },
+        {
+          "name": "CMS Approve Request (Processor/DPO)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"notes\": \"Approved - complies with DPDPA guidelines\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/consent-requests/:id/cms_approve/",
+              "host": ["{{baseUrl}}"],
+              "path": ["consent-requests", ":id", "cms_approve", ""],
+              "variable": [{ "key": "id", "value": "request-uuid-here" }]
+            }
+          }
+        },
+        {
+          "name": "CMS Deny Request (Processor/DPO)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"notes\": \"Denied - excessive data collection\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/consent-requests/:id/cms_deny/",
+              "host": ["{{baseUrl}}"],
+              "path": ["consent-requests", ":id", "cms_deny", ""],
+              "variable": [{ "key": "id", "value": "request-uuid-here" }]
+            }
+          }
+        },
+        {
+          "name": "Principal Accept Request",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/consent-requests/:id/accept/",
+              "host": ["{{baseUrl}}"],
+              "path": ["consent-requests", ":id", "accept", ""],
+              "variable": [{ "key": "id", "value": "request-uuid-here" }]
+            }
+          }
+        },
+        {
+          "name": "Principal Reject Request",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"I do not wish to share this data\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/consent-requests/:id/reject/",
+              "host": ["{{baseUrl}}"],
+              "path": ["consent-requests", ":id", "reject", ""],
+              "variable": [{ "key": "id", "value": "request-uuid-here" }]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Consents",
+      "item": [
+        {
+          "name": "List All Consents",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/consents/",
+              "host": ["{{baseUrl}}"],
+              "path": ["consents", ""]
+            }
+          }
+        },
+        {
+          "name": "Get Consent by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/consents/:id/",
+              "host": ["{{baseUrl}}"],
+              "path": ["consents", ":id", ""],
+              "variable": [{ "key": "id", "value": "consent-uuid-here" }]
+            }
+          }
+        },
+        {
+          "name": "Get Consents by Principal",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/consents/principal/:id/",
+              "host": ["{{baseUrl}}"],
+              "path": ["consents", "principal", ":id", ""],
+              "variable": [{ "key": "id", "value": "principal-uuid-here" }]
+            }
+          }
+        },
+        {
+          "name": "Get Consents by Fiduciary",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/consents/fiduciary/:id/",
+              "host": ["{{baseUrl}}"],
+              "path": ["consents", "fiduciary", ":id", ""],
+              "variable": [{ "key": "id", "value": "fiduciary-uuid-here" }]
+            }
+          }
+        },
+        {
+          "name": "Get Active Consents",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/consents/active/",
+              "host": ["{{baseUrl}}"],
+              "path": ["consents", "active", ""]
+            }
+          }
+        },
+        {
+          "name": "Revoke Consent (Principal Only)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"No longer require services\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/consents/:id/revoke/",
+              "host": ["{{baseUrl}}"],
+              "path": ["consents", ":id", "revoke", ""],
+              "variable": [{ "key": "id", "value": "consent-uuid-here" }]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Grievances",
+      "item": [
+        {
+          "name": "List All Grievances",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/grievances/",
+              "host": ["{{baseUrl}}"],
+              "path": ["grievances", ""]
+            }
+          }
+        },
+        {
+          "name": "Get Grievance by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/grievances/:id/",
+              "host": ["{{baseUrl}}"],
+              "path": ["grievances", ":id", ""],
+              "variable": [{ "key": "id", "value": "grievance-uuid-here" }]
+            }
+          }
+        },
+        {
+          "name": "Create Grievance",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"subject\": \"Data Processing Without Consent\",\n  \"description\": \"My data was shared with third parties without my explicit consent.\",\n  \"grievance_type\": \"unauthorized_processing\",\n  \"priority\": \"high\",\n  \"related_consent\": \"consent-uuid-here\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/grievances/",
+              "host": ["{{baseUrl}}"],
+              "path": ["grievances", ""]
+            }
+          }
+        },
+        {
+          "name": "Get Grievances by Complainant",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/grievances/complainant/:id/",
+              "host": ["{{baseUrl}}"],
+              "path": ["grievances", "complainant", ":id", ""],
+              "variable": [{ "key": "id", "value": "user-uuid-here" }]
+            }
+          }
+        },
+        {
+          "name": "Get Grievances by DPO",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/grievances/dpo/:id/",
+              "host": ["{{baseUrl}}"],
+              "path": ["grievances", "dpo", ":id", ""],
+              "variable": [{ "key": "id", "value": "dpo-uuid-here" }]
+            }
+          }
+        },
+        {
+          "name": "Get Open Grievances",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/grievances/open/",
+              "host": ["{{baseUrl}}"],
+              "path": ["grievances", "open", ""]
+            }
+          }
+        },
+        {
+          "name": "Get Unassigned Grievances (DPO/Processor)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/grievances/unassigned/",
+              "host": ["{{baseUrl}}"],
+              "path": ["grievances", "unassigned", ""]
+            }
+          }
+        },
+        {
+          "name": "Get SLA Breached Grievances",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/grievances/sla_breached/",
+              "host": ["{{baseUrl}}"],
+              "path": ["grievances", "sla_breached", ""]
+            }
+          }
+        },
+        {
+          "name": "Filter by Status",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/grievances/by_status/?status=pending",
+              "host": ["{{baseUrl}}"],
+              "path": ["grievances", "by_status", ""],
+              "query": [{ "key": "status", "value": "pending" }]
+            }
+          }
+        },
+        {
+          "name": "Filter by Priority",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/grievances/by_priority/?priority=high",
+              "host": ["{{baseUrl}}"],
+              "path": ["grievances", "by_priority", ""],
+              "query": [{ "key": "priority", "value": "high" }]
+            }
+          }
+        },
+        {
+          "name": "Assign DPO",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dpo_id\": \"dpo-uuid-here\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/grievances/:id/assign_dpo/",
+              "host": ["{{baseUrl}}"],
+              "path": ["grievances", ":id", "assign_dpo", ""],
+              "variable": [{ "key": "id", "value": "grievance-uuid-here" }]
+            }
+          }
+        },
+        {
+          "name": "Resolve Grievance",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"resolution_notes\": \"Issue investigated. Third-party access has been revoked and user notified.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/grievances/:id/resolve/",
+              "host": ["{{baseUrl}}"],
+              "path": ["grievances", ":id", "resolve", ""],
+              "variable": [{ "key": "id", "value": "grievance-uuid-here" }]
+            }
+          }
+        },
+        {
+          "name": "Escalate Grievance (DPO)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Requires senior management review\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/grievances/:id/escalate/",
+              "host": ["{{baseUrl}}"],
+              "path": ["grievances", ":id", "escalate", ""],
+              "variable": [{ "key": "id", "value": "grievance-uuid-here" }]
+            }
+          }
+        },
+        {
+          "name": "Close Grievance",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/grievances/:id/close/",
+              "host": ["{{baseUrl}}"],
+              "path": ["grievances", ":id", "close", ""],
+              "variable": [{ "key": "id", "value": "grievance-uuid-here" }]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Data Principal Rights (DPDPA)",
+      "item": [
+        {
+          "name": "List Rights Requests",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/rights-requests/",
+              "host": ["{{baseUrl}}"],
+              "path": ["rights-requests", ""]
+            }
+          }
+        },
+        {
+          "name": "Get Rights Request by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/rights-requests/:id/",
+              "host": ["{{baseUrl}}"],
+              "path": ["rights-requests", ":id", ""],
+              "variable": [{ "key": "id", "value": "request-uuid-here" }]
+            }
+          }
+        },
+        {
+          "name": "Submit Rights Request (Principal)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"request_type\": \"access\",\n  \"description\": \"I would like to access all personal data held about me.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/rights-requests/",
+              "host": ["{{baseUrl}}"],
+              "path": ["rights-requests", ""]
+            }
+          }
+        },
+        {
+          "name": "Submit Correction Request",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"request_type\": \"correction\",\n  \"description\": \"Please correct my phone number to 9876543210.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/rights-requests/",
+              "host": ["{{baseUrl}}"],
+              "path": ["rights-requests", ""]
+            }
+          }
+        },
+        {
+          "name": "Get Pending Rights Requests (DPO/Processor)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/rights-requests/pending/",
+              "host": ["{{baseUrl}}"],
+              "path": ["rights-requests", "pending", ""]
+            }
+          }
+        },
+        {
+          "name": "Get Overdue Rights Requests",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/rights-requests/overdue/",
+              "host": ["{{baseUrl}}"],
+              "path": ["rights-requests", "overdue", ""]
+            }
+          }
+        },
+        {
+          "name": "Export My Data (Principal)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/rights-requests/my-data/",
+              "host": ["{{baseUrl}}"],
+              "path": ["rights-requests", "my-data", ""]
+            }
+          }
+        },
+        {
+          "name": "Withdraw All Consents (Principal)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"confirmation\": true,\n  \"reason\": \"No longer require services from any data fiduciary.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/rights-requests/withdraw-all/",
+              "host": ["{{baseUrl}}"],
+              "path": ["rights-requests", "withdraw-all", ""]
+            }
+          }
+        },
+        {
+          "name": "Request Data Erasure (Principal)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"confirmation\": true,\n  \"reason\": \"Right to be forgotten - please delete all my personal data.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/rights-requests/request-erasure/",
+              "host": ["{{baseUrl}}"],
+              "path": ["rights-requests", "request-erasure", ""]
+            }
+          }
+        },
+        {
+          "name": "Process Rights Request (DPO/Processor)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"processor_notes\": \"Request acknowledged, gathering data from all sources.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/rights-requests/:id/process/",
+              "host": ["{{baseUrl}}"],
+              "path": ["rights-requests", ":id", "process", ""],
+              "variable": [{ "key": "id", "value": "request-uuid-here" }]
+            }
+          }
+        },
+        {
+          "name": "Complete Rights Request (DPO/Processor)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"response_data\": \"Data export file attached. All personal data has been compiled.\",\n  \"processor_notes\": \"Request completed within DPDPA timeline.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/rights-requests/:id/complete/",
+              "host": ["{{baseUrl}}"],
+              "path": ["rights-requests", ":id", "complete", ""],
+              "variable": [{ "key": "id", "value": "request-uuid-here" }]
+            }
+          }
+        },
+        {
+          "name": "Reject Rights Request (DPO/Processor)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"rejection_reason\": \"Request could not be fulfilled - user identity could not be verified.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/rights-requests/:id/reject/",
+              "host": ["{{baseUrl}}"],
+              "path": ["rights-requests", ":id", "reject", ""],
+              "variable": [{ "key": "id", "value": "request-uuid-here" }]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Audit Logs",
+      "item": [
+        {
+          "name": "List All Audit Logs",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/audit-logs/",
+              "host": ["{{baseUrl}}"],
+              "path": ["audit-logs", ""]
+            }
+          }
+        },
+        {
+          "name": "Get Audit Log by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/audit-logs/:id/",
+              "host": ["{{baseUrl}}"],
+              "path": ["audit-logs", ":id", ""],
+              "variable": [{ "key": "id", "value": "log-uuid-here" }]
+            }
+          }
+        },
+        {
+          "name": "Create Audit Log",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"action\": \"data_accessed\",\n  \"entity_type\": \"consent\",\n  \"entity_id\": \"consent-uuid-here\",\n  \"details\": {\n    \"ip_address\": \"192.168.1.1\",\n    \"user_agent\": \"Mozilla/5.0\",\n    \"action_description\": \"Accessed user consent record\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/audit-logs/",
+              "host": ["{{baseUrl}}"],
+              "path": ["audit-logs", ""]
+            }
+          }
+        },
+        {
+          "name": "Get Audit Logs by User",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/audit-logs/user/:id/",
+              "host": ["{{baseUrl}}"],
+              "path": ["audit-logs", "user", ":id", ""],
+              "variable": [{ "key": "id", "value": "user-uuid-here" }]
+            }
+          }
+        },
+        {
+          "name": "Get Audit Logs by Entity",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/audit-logs/entity/:type/:id/",
+              "host": ["{{baseUrl}}"],
+              "path": ["audit-logs", "entity", ":type", ":id", ""],
+              "variable": [
+                { "key": "type", "value": "consent" },
+                { "key": "id", "value": "consent-uuid-here" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Notifications",
+      "item": [
+        {
+          "name": "List My Notifications",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/notifications/",
+              "host": ["{{baseUrl}}"],
+              "path": ["notifications", ""]
+            }
+          }
+        },
+        {
+          "name": "Get Notification by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/notifications/:id/",
+              "host": ["{{baseUrl}}"],
+              "path": ["notifications", ":id", ""],
+              "variable": [{ "key": "id", "value": "notification-uuid-here" }]
+            }
+          }
+        },
+        {
+          "name": "Filter Unread Notifications",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/notifications/?is_read=false",
+              "host": ["{{baseUrl}}"],
+              "path": ["notifications", ""],
+              "query": [{ "key": "is_read", "value": "false" }]
+            }
+          }
+        },
+        {
+          "name": "Filter by Notification Type",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/notifications/?type=consent_expiring",
+              "host": ["{{baseUrl}}"],
+              "path": ["notifications", ""],
+              "query": [{ "key": "type", "value": "consent_expiring" }]
+            }
+          }
+        },
+        {
+          "name": "Mark Notification as Read",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/notifications/:id/mark_read/",
+              "host": ["{{baseUrl}}"],
+              "path": ["notifications", ":id", "mark_read", ""],
+              "variable": [{ "key": "id", "value": "notification-uuid-here" }]
+            }
+          }
+        },
+        {
+          "name": "Mark All Notifications as Read",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/notifications/mark_all_read/",
+              "host": ["{{baseUrl}}"],
+              "path": ["notifications", "mark_all_read", ""]
+            }
+          }
+        },
+        {
+          "name": "Get Unread Count",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/notifications/unread_count/",
+              "host": ["{{baseUrl}}"],
+              "path": ["notifications", "unread_count", ""]
+            }
+          }
+        },
+        {
+          "name": "Get Recent Notifications",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/notifications/recent/",
+              "host": ["{{baseUrl}}"],
+              "path": ["notifications", "recent", ""]
+            }
+          }
+        },
+        {
+          "name": "Clear All Read Notifications",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/notifications/clear_all/",
+              "host": ["{{baseUrl}}"],
+              "path": ["notifications", "clear_all", ""]
+            }
+          }
+        },
+        {
+          "name": "Delete Notification",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/notifications/:id/",
+              "host": ["{{baseUrl}}"],
+              "path": ["notifications", ":id", ""],
+              "variable": [{ "key": "id", "value": "notification-uuid-here" }]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

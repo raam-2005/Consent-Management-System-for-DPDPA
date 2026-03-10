@@ -18,6 +18,7 @@ router.register(r'consents', views.ConsentViewSet, basename='consent')
 router.register(r'grievances', views.GrievanceViewSet, basename='grievance')
 router.register(r'audit-logs', views.AuditLogViewSet, basename='audit-log')
 router.register(r'rights-requests', views.DataPrincipalRightsRequestViewSet, basename='rights-request')
+router.register(r'notifications', views.NotificationViewSet, basename='notification')
 
 urlpatterns = [
     # Router URLs (CRUD for all models)

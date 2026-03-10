@@ -15,6 +15,7 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action, api_view, permission_classes as perm_classes
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny, BasePermission
+from rest_framework.exceptions import PermissionDenied
 from django.utils import timezone
 from django.db.models import Count, Q
 from datetime import timedelta
@@ -24,9 +25,9 @@ from .models import (
     RoleChoices, ConsentStatusChoices, CMSStatusChoices,
     GrievanceStatusChoices, AuditActionChoices,
     DataRightsRequestTypeChoices, DataRightsRequestStatusChoices,
-    ConsentLifecycleChoices
+    ConsentLifecycleChoices, NotificationTypeChoices
 )
-from .models import DataPrincipalRightsRequest
+from .models import DataPrincipalRightsRequest, Notification
 from .serializers import (
     UserSerializer, UserCreateSerializer, UserMinimalSerializer,
     PurposeSerializer,
@@ -36,13 +37,24 @@ from .serializers import (
     AuditLogSerializer, AuditLogCreateSerializer,
     DataPrincipalRightsRequestSerializer, DataPrincipalRightsRequestCreateSerializer,
     DataExportSerializer,
-    DashboardStatsSerializer, ComplianceDashboardSerializer
+    DashboardStatsSerializer, ComplianceDashboardSerializer,
+    NotificationSerializer, NotificationCreateSerializer
 )
 from .audit_utils import (
     create_audit_log, log_consent_granted, log_consent_revoked,
     log_data_accessed, log_data_corrected, log_data_deleted,
     log_grievance_raised, log_grievance_resolved, log_profile_updated
 )
+from .notification_utils import (
+    notify_consent_request, notify_consent_approved, notify_consent_rejected,
+    notify_consent_expiring, notify_grievance_assigned, notify_profile_updated
+)
+import logging
+import re
+from django.db import transaction
+from django.core.exceptions import ValidationError
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================
@@ -103,6 +115,81 @@ class IsOwnerOrAdmin(BasePermission):
 
 
 # ============================================
+# VALIDATION HELPERS
+# ============================================
+def validate_uuid(value, field_name='id'):
+    """
+    Validate that a value is a valid UUID.
+    
+    Args:
+        value: The value to validate
+        field_name: Name of the field for error messages
+        
+    Returns:
+        str: The validated UUID string
+        
+    Raises:
+        ValidationError: If the value is not a valid UUID
+    """
+    if not value:
+        raise ValidationError(f'{field_name} is required')
+    
+    uuid_pattern = r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    if not re.match(uuid_pattern, str(value).lower()):
+        raise ValidationError(f'{field_name} must be a valid UUID')
+    
+    return str(value)
+
+
+def sanitize_text(text, max_length=5000):
+    """
+    Sanitize text input to prevent XSS and limit length.
+    
+    Args:
+        text: The text to sanitize
+        max_length: Maximum allowed length
+        
+    Returns:
+        str: Sanitized text
+    """
+    if not text:
+        return ''
+    
+    # Convert to string and strip whitespace
+    text = str(text).strip()
+    
+    # Limit length
+    if len(text) > max_length:
+        text = text[:max_length]
+    
+    # Remove potentially dangerous characters (basic XSS prevention)
+    # For a production system, use a library like bleach
+    dangerous_patterns = ['<script', '</script', 'javascript:', 'onerror=', 'onclick=']
+    for pattern in dangerous_patterns:
+        text = text.replace(pattern, '')
+    
+    return text
+
+
+def api_error_response(message, error_code=None, status_code=status.HTTP_400_BAD_REQUEST):
+    """
+    Create a standardized error response.
+    
+    Args:
+        message: Error message
+        error_code: Optional error code for frontend handling
+        status_code: HTTP status code
+        
+    Returns:
+        Response: DRF Response object
+    """
+    error_data = {'error': message}
+    if error_code:
+        error_data['code'] = error_code
+    return Response(error_data, status=status_code)
+
+
+# ============================================
 # USER VIEWSET
 # ============================================
 class UserViewSet(viewsets.ModelViewSet):
@@ -135,15 +222,40 @@ class UserViewSet(viewsets.ModelViewSet):
         return UserSerializer
     
     def get_queryset(self):
-        """Filter users based on role"""
+        """Filter users based on role with optimized queries"""
         user = self.request.user
         if not user.is_authenticated:
             return User.objects.none()
         # Admins see all users
         if user.role in [RoleChoices.DPO, RoleChoices.PROCESSOR]:
-            return User.objects.all()
+            return User.objects.all().order_by('-created_at')
         # Others see only themselves
         return User.objects.filter(id=user.id)
+    
+    def update(self, request, *args, **kwargs):
+        """Update user with audit logging and notifications"""
+        try:
+            instance = self.get_object()
+            
+            # Sanitize text inputs
+            if 'full_name' in request.data:
+                request.data['full_name'] = sanitize_text(request.data.get('full_name', ''), 255)
+            if 'address' in request.data:
+                request.data['address'] = sanitize_text(request.data.get('address', ''), 1000)
+            
+            response = super().update(request, *args, **kwargs)
+            
+            # Log profile update
+            log_profile_updated(request, instance)
+            
+            # Notify user of profile update (if not updating own profile)
+            if instance != request.user:
+                notify_profile_updated(instance, request.user)
+            
+            return response
+        except Exception as e:
+            logger.error(f"Error updating user: {e}")
+            return api_error_response('Failed to update user', status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     @action(detail=False, methods=['get'], url_path='role/(?P<role>[^/.]+)')
     def by_role(self, request, role=None):
@@ -183,37 +295,51 @@ class PurposeViewSet(viewsets.ModelViewSet):
     Custom actions:
     GET /api/purposes/fiduciary/{id}/ - Get purposes by fiduciary
     """
-    queryset = Purpose.objects.all()
+    queryset = Purpose.objects.select_related('fiduciary').all()
     serializer_class = PurposeSerializer
     permission_classes = [IsAuthenticated]
     
     def get_queryset(self):
-        """Filter purposes based on user role"""
+        """Filter purposes based on user role with optimized queries"""
         user = self.request.user
         if not user.is_authenticated:
             return Purpose.objects.none()
+        
+        base_qs = Purpose.objects.select_related('fiduciary').order_by('-created_at')
+        
         # Admins see all
         if user.role in [RoleChoices.DPO, RoleChoices.PROCESSOR]:
-            return Purpose.objects.all()
+            return base_qs
         # Fiduciaries see their own purposes
         if user.role == RoleChoices.FIDUCIARY:
-            return Purpose.objects.filter(fiduciary=user)
+            return base_qs.filter(fiduciary=user)
         # Principals see all active purposes
-        return Purpose.objects.filter(is_active=True)
+        return base_qs.filter(is_active=True)
     
     def perform_create(self, serializer):
         """Auto-assign fiduciary to current user if fiduciary role"""
-        if self.request.user.role == RoleChoices.FIDUCIARY:
-            serializer.save(fiduciary=self.request.user)
-        else:
-            serializer.save()
+        try:
+            if self.request.user.role == RoleChoices.FIDUCIARY:
+                serializer.save(fiduciary=self.request.user)
+            else:
+                serializer.save()
+        except Exception as e:
+            logger.error(f"Error creating purpose: {e}")
+            raise
     
     @action(detail=False, methods=['get'], url_path='fiduciary/(?P<fiduciary_id>[^/.]+)')
     def by_fiduciary(self, request, fiduciary_id=None):
         """Get purposes by fiduciary"""
-        purposes = Purpose.objects.filter(fiduciary_id=fiduciary_id)
-        serializer = PurposeSerializer(purposes, many=True)
-        return Response(serializer.data)
+        try:
+            validate_uuid(fiduciary_id, 'fiduciary_id')
+            purposes = Purpose.objects.select_related('fiduciary').filter(fiduciary_id=fiduciary_id)
+            serializer = PurposeSerializer(purposes, many=True)
+            return Response(serializer.data)
+        except ValidationError as e:
+            return api_error_response(str(e))
+        except Exception as e:
+            logger.error(f"Error fetching purposes by fiduciary: {e}")
+            return api_error_response('Failed to fetch purposes', status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 # ============================================
@@ -235,7 +361,9 @@ class ConsentRequestViewSet(viewsets.ModelViewSet):
     POST /api/consent-requests/{id}/accept/ - Principal accepts
     POST /api/consent-requests/{id}/reject/ - Principal rejects
     """
-    queryset = ConsentRequest.objects.all()
+    queryset = ConsentRequest.objects.select_related(
+        'principal', 'fiduciary', 'purpose', 'cms_reviewed_by'
+    ).all()
     serializer_class = ConsentRequestSerializer
     permission_classes = [IsAuthenticated]
     
@@ -245,32 +373,94 @@ class ConsentRequestViewSet(viewsets.ModelViewSet):
         return ConsentRequestSerializer
     
     def get_queryset(self):
-        """Filter based on user role"""
+        """Filter based on user role with optimized queries"""
         user = self.request.user
         if not user.is_authenticated:
             return ConsentRequest.objects.none()
+        
+        base_qs = ConsentRequest.objects.select_related(
+            'principal', 'fiduciary', 'purpose', 'cms_reviewed_by'
+        ).order_by('-created_at')
+        
         # Admins see all
         if user.role in [RoleChoices.DPO, RoleChoices.PROCESSOR]:
-            return ConsentRequest.objects.all()
+            return base_qs
         # Fiduciaries see their requests
         if user.role == RoleChoices.FIDUCIARY:
-            return ConsentRequest.objects.filter(fiduciary=user)
+            return base_qs.filter(fiduciary=user)
         # Principals see requests to them
-        return ConsentRequest.objects.filter(principal=user)
+        return base_qs.filter(principal=user)
     
+    def perform_create(self, serializer):
+        """Auto-assign fiduciary from authenticated user"""
+        user = self.request.user
+        
+        # Only fiduciaries can create consent requests
+        if user.role != RoleChoices.FIDUCIARY:
+            raise PermissionDenied("Only Data Fiduciaries can create consent requests")
+        
+        # Auto-assign fiduciary if not provided
+        consent_request = serializer.save(fiduciary=user)
+        
+        # Create audit log
+        AuditLog.objects.create(
+            user=user,
+            action=AuditActionChoices.CONSENT_REQUESTED,
+            entity_type='consent_request',
+            entity_id=str(consent_request.id),
+            details={
+                'principal_id': str(consent_request.principal_id),
+                'purpose_id': str(consent_request.purpose_id) if consent_request.purpose_id else None
+            }
+        )
+    
+    @action(detail=False, methods=['get'], url_path='lookup-principal')
+    def lookup_principal(self, request):
+        """Lookup a principal user by email (Fiduciary only)"""
+        if request.user.role != RoleChoices.FIDUCIARY:
+            return api_error_response('Not authorized', status_code=status.HTTP_403_FORBIDDEN)
+        
+        email = request.query_params.get('email', '').strip()
+        if not email:
+            return api_error_response('Email parameter is required', error_code='MISSING_EMAIL')
+        
+        try:
+            principal = User.objects.get(email=email, role=RoleChoices.PRINCIPAL)
+            return Response({
+                'id': str(principal.id),
+                'email': principal.email,
+                'full_name': principal.full_name
+            })
+        except User.DoesNotExist:
+            return api_error_response('Principal not found with this email', error_code='PRINCIPAL_NOT_FOUND', status_code=status.HTTP_404_NOT_FOUND)
+
     @action(detail=False, methods=['get'], url_path='principal/(?P<principal_id>[^/.]+)')
     def by_principal(self, request, principal_id=None):
         """Get consent requests by principal"""
-        requests = ConsentRequest.objects.filter(principal_id=principal_id)
-        serializer = ConsentRequestSerializer(requests, many=True)
-        return Response(serializer.data)
+        try:
+            validate_uuid(principal_id, 'principal_id')
+            requests = self.get_queryset().filter(principal_id=principal_id)
+            serializer = ConsentRequestSerializer(requests, many=True)
+            return Response(serializer.data)
+        except ValidationError as e:
+            return api_error_response(str(e))
+        except Exception as e:
+            logger.error(f"Error fetching requests by principal: {e}")
+            return api_error_response('Failed to fetch requests', status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     @action(detail=False, methods=['get'], url_path='fiduciary/(?P<fiduciary_id>[^/.]+)')
     def by_fiduciary(self, request, fiduciary_id=None):
         """Get consent requests by fiduciary"""
-        requests = ConsentRequest.objects.filter(fiduciary_id=fiduciary_id)
-        serializer = ConsentRequestSerializer(requests, many=True)
-        return Response(serializer.data)
+        try:
+            validate_uuid(fiduciary_id, 'fiduciary_id')
+            requests = self.get_queryset().filter(fiduciary_id=fiduciary_id)
+            serializer = ConsentRequestSerializer(requests, many=True)
+            return Response(serializer.data)
+        except ValidationError as e:
+            return api_error_response(str(e))
+        except Exception as e:
+            logger.error(f"Error fetching requests by fiduciary: {e}")
+            return api_error_response('Failed to fetch requests', status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     @action(detail=False, methods=['get'])
     def pending_cms(self, request):
@@ -298,70 +488,102 @@ class ConsentRequestViewSet(viewsets.ModelViewSet):
     def cms_approve(self, request, pk=None):
         """CMS approves a consent request (Processor/DPO only)"""
         if request.user.role not in [RoleChoices.PROCESSOR, RoleChoices.DPO]:
-            return Response({'error': 'Not authorized'}, status=status.HTTP_403_FORBIDDEN)
+            return api_error_response('Not authorized', status_code=status.HTTP_403_FORBIDDEN)
         
-        consent_request = self.get_object()
-        
-        if consent_request.cms_status != CMSStatusChoices.PENDING_CMS:
-            return Response(
-                {'error': 'Request has already been reviewed'},
-                status=status.HTTP_400_BAD_REQUEST
+        try:
+            consent_request = self.get_object()
+            
+            if consent_request.cms_status != CMSStatusChoices.PENDING_CMS:
+                return api_error_response(
+                    'Request has already been reviewed',
+                    error_code='ALREADY_REVIEWED'
+                )
+            
+            # Use transaction to ensure atomicity
+            with transaction.atomic():
+                consent_request.cms_status = CMSStatusChoices.CMS_APPROVED
+                consent_request.cms_reviewed_at = timezone.now()
+                consent_request.cms_reviewed_by = request.user
+                consent_request.cms_notes = sanitize_text(request.data.get('notes', ''))
+                consent_request.save()
+                
+                # Create audit log
+                create_audit_log(
+                    request=request,
+                    action=AuditActionChoices.CONSENT_GRANTED,
+                    entity_type='consent_request',
+                    entity_id=str(consent_request.id),
+                    details={'action': 'cms_approved', 'notes': consent_request.cms_notes}
+                )
+            
+            # Send notification to principal (outside transaction)
+            notify_consent_request(consent_request)
+            
+            serializer = ConsentRequestSerializer(consent_request)
+            return Response(serializer.data)
+            
+        except Exception as e:
+            logger.error(f"Error in CMS approve: {e}")
+            return api_error_response(
+                'Failed to approve request',
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-        
-        consent_request.cms_status = CMSStatusChoices.CMS_APPROVED
-        consent_request.cms_reviewed_at = timezone.now()
-        consent_request.cms_reviewed_by_id = request.data.get('reviewer_id')
-        consent_request.cms_notes = request.data.get('notes', '')
-        consent_request.save()
-        
-        # Create audit log
-        AuditLog.objects.create(
-            user_id=request.data.get('reviewer_id'),
-            action='consent_granted',
-            entity_type='consent_request',
-            entity_id=str(consent_request.id),
-            details={'action': 'cms_approved', 'notes': consent_request.cms_notes}
-        )
-        
-        serializer = ConsentRequestSerializer(consent_request)
-        return Response(serializer.data)
     
     @action(detail=True, methods=['post'])
     def cms_deny(self, request, pk=None):
-        """CMS denies a consent request"""
-        consent_request = self.get_object()
+        """CMS denies a consent request (Processor/DPO only)"""
+        if request.user.role not in [RoleChoices.PROCESSOR, RoleChoices.DPO]:
+            return api_error_response('Not authorized', status_code=status.HTTP_403_FORBIDDEN)
         
-        if consent_request.cms_status != CMSStatusChoices.PENDING_CMS:
-            return Response(
-                {'error': 'Request has already been reviewed'},
-                status=status.HTTP_400_BAD_REQUEST
+        try:
+            consent_request = self.get_object()
+            
+            if consent_request.cms_status != CMSStatusChoices.PENDING_CMS:
+                return api_error_response(
+                    'Request has already been reviewed',
+                    error_code='ALREADY_REVIEWED'
+                )
+            
+            with transaction.atomic():
+                consent_request.cms_status = CMSStatusChoices.CMS_DENIED
+                consent_request.status = ConsentStatusChoices.REJECTED
+                consent_request.cms_reviewed_at = timezone.now()
+                consent_request.cms_reviewed_by = request.user
+                consent_request.cms_notes = sanitize_text(request.data.get('notes', ''))
+                consent_request.responded_at = timezone.now()
+                consent_request.save()
+                
+                # Create audit log
+                create_audit_log(
+                    request=request,
+                    action=AuditActionChoices.CONSENT_REJECTED,
+                    entity_type='consent_request',
+                    entity_id=str(consent_request.id),
+                    details={'action': 'cms_denied', 'notes': consent_request.cms_notes}
+                )
+            
+            serializer = ConsentRequestSerializer(consent_request)
+            return Response(serializer.data)
+            
+        except Exception as e:
+            logger.error(f"Error in CMS deny: {e}")
+            return api_error_response(
+                'Failed to deny request',
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-        
-        consent_request.cms_status = CMSStatusChoices.CMS_DENIED
-        consent_request.status = ConsentStatusChoices.REJECTED
-        consent_request.cms_reviewed_at = timezone.now()
-        consent_request.cms_reviewed_by_id = request.data.get('reviewer_id')
-        consent_request.cms_notes = request.data.get('notes', '')
-        consent_request.responded_at = timezone.now()
-        consent_request.save()
-        
-        # Create audit log
-        AuditLog.objects.create(
-            user_id=request.data.get('reviewer_id'),
-            action='consent_rejected',
-            entity_type='consent_request',
-            entity_id=str(consent_request.id),
-            details={'action': 'cms_denied', 'notes': consent_request.cms_notes}
-        )
-        
-        serializer = ConsentRequestSerializer(consent_request)
-        return Response(serializer.data)
     
     @action(detail=True, methods=['post'])
     def accept(self, request, pk=None):
         """Principal accepts a consent request"""
         consent_request = self.get_object()
         
+        # Verify principal is the one accepting
+        if request.user.id != consent_request.principal.id:
+            return Response(
+                {'error': 'Only the data principal can accept this request'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
         if consent_request.cms_status != CMSStatusChoices.CMS_APPROVED:
             return Response(
                 {'error': 'Request not yet approved by CMS'},
@@ -374,39 +596,58 @@ class ConsentRequestViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Update consent request
-        consent_request.status = ConsentStatusChoices.ACTIVE
-        consent_request.responded_at = timezone.now()
-        consent_request.save()
-        
-        # Create Consent record
-        consent = Consent.objects.create(
-            consent_request=consent_request,
-            principal=consent_request.principal,
-            fiduciary=consent_request.fiduciary,
-            purpose=consent_request.purpose,
-            data_categories=consent_request.data_requested,
-            status=ConsentStatusChoices.ACTIVE,
-            expires_at=consent_request.expires_at
-        )
-        
-        # Create audit log
-        AuditLog.objects.create(
-            user=consent_request.principal,
-            action=AuditActionChoices.CONSENT_GRANTED,
-            entity_type='consent',
-            entity_id=str(consent.id),
-            details={'consent_request_id': str(consent_request.id)}
-        )
-        
-        serializer = ConsentRequestSerializer(consent_request)
-        return Response(serializer.data)
+        try:
+            with transaction.atomic():
+                # Update consent request
+                consent_request.status = ConsentStatusChoices.ACTIVE
+                consent_request.responded_at = timezone.now()
+                consent_request.save()
+                
+                # Create Consent record
+                consent = Consent.objects.create(
+                    consent_request=consent_request,
+                    principal=consent_request.principal,
+                    fiduciary=consent_request.fiduciary,
+                    purpose=consent_request.purpose,
+                    data_categories=consent_request.data_requested,
+                    status=ConsentStatusChoices.ACTIVE,
+                    expires_at=consent_request.expires_at
+                )
+                
+                # Create audit log
+                AuditLog.objects.create(
+                    user=consent_request.principal,
+                    action=AuditActionChoices.CONSENT_GRANTED,
+                    entity_type='consent',
+                    entity_id=str(consent.id),
+                    details={'consent_request_id': str(consent_request.id)}
+                )
+            
+            # Send notification to fiduciary (outside transaction)
+            notify_consent_approved(consent)
+            
+            serializer = ConsentRequestSerializer(consent_request)
+            return Response(serializer.data)
+            
+        except Exception as e:
+            logger.error(f"Error accepting consent request: {e}")
+            return api_error_response(
+                'Failed to accept request',
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
     
     @action(detail=True, methods=['post'])
     def reject(self, request, pk=None):
         """Principal rejects a consent request"""
         consent_request = self.get_object()
         
+        # Verify principal is the one rejecting
+        if request.user.id != consent_request.principal.id:
+            return Response(
+                {'error': 'Only the data principal can reject this request'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
         if consent_request.cms_status != CMSStatusChoices.CMS_APPROVED:
             return Response(
                 {'error': 'Request not yet approved by CMS'},
@@ -419,21 +660,33 @@ class ConsentRequestViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        consent_request.status = ConsentStatusChoices.REJECTED
-        consent_request.responded_at = timezone.now()
-        consent_request.save()
-        
-        # Create audit log
-        AuditLog.objects.create(
-            user=consent_request.principal,
-            action=AuditActionChoices.CONSENT_REJECTED,
-            entity_type='consent_request',
-            entity_id=str(consent_request.id),
-            details={'reason': 'Principal rejected'}
-        )
-        
-        serializer = ConsentRequestSerializer(consent_request)
-        return Response(serializer.data)
+        try:
+            with transaction.atomic():
+                consent_request.status = ConsentStatusChoices.REJECTED
+                consent_request.responded_at = timezone.now()
+                consent_request.save()
+                
+                # Create audit log
+                AuditLog.objects.create(
+                    user=consent_request.principal,
+                    action=AuditActionChoices.CONSENT_REJECTED,
+                    entity_type='consent_request',
+                    entity_id=str(consent_request.id),
+                    details={'reason': request.data.get('reason', 'Principal rejected')}
+                )
+            
+            # Send notification to fiduciary (outside transaction)
+            notify_consent_rejected(consent_request)
+            
+            serializer = ConsentRequestSerializer(consent_request)
+            return Response(serializer.data)
+            
+        except Exception as e:
+            logger.error(f"Error rejecting consent request: {e}")
+            return api_error_response(
+                'Failed to reject request',
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 
 # ============================================
@@ -452,38 +705,59 @@ class ConsentViewSet(viewsets.ModelViewSet):
     GET /api/consents/active/ - Get active consents
     POST /api/consents/{id}/revoke/ - Revoke a consent (Principal only)
     """
-    queryset = Consent.objects.all()
+    queryset = Consent.objects.select_related(
+        'principal', 'fiduciary', 'purpose', 'consent_request'
+    ).all()
     serializer_class = ConsentSerializer
     permission_classes = [IsAuthenticated]
     http_method_names = ['get', 'post', 'head', 'options']  # No PUT/PATCH/DELETE
     
     def get_queryset(self):
-        """Filter based on user role"""
+        """Filter based on user role with optimized queries"""
         user = self.request.user
         if not user.is_authenticated:
             return Consent.objects.none()
+        
+        base_qs = Consent.objects.select_related(
+            'principal', 'fiduciary', 'purpose', 'consent_request'
+        ).order_by('-granted_at')
+        
         # Admins see all
         if user.role in [RoleChoices.DPO, RoleChoices.PROCESSOR]:
-            return Consent.objects.all()
+            return base_qs
         # Fiduciaries see their consents
         if user.role == RoleChoices.FIDUCIARY:
-            return Consent.objects.filter(fiduciary=user)
+            return base_qs.filter(fiduciary=user)
         # Principals see their consents
-        return Consent.objects.filter(principal=user)
+        return base_qs.filter(principal=user)
     
     @action(detail=False, methods=['get'], url_path='principal/(?P<principal_id>[^/.]+)')
     def by_principal(self, request, principal_id=None):
         """Get consents by principal"""
-        consents = self.queryset.filter(principal_id=principal_id)
-        serializer = ConsentSerializer(consents, many=True)
-        return Response(serializer.data)
+        try:
+            validate_uuid(principal_id, 'principal_id')
+            consents = self.get_queryset().filter(principal_id=principal_id)
+            serializer = ConsentSerializer(consents, many=True)
+            return Response(serializer.data)
+        except ValidationError as e:
+            return api_error_response(str(e))
+        except Exception as e:
+            logger.error(f"Error fetching consents by principal: {e}")
+            return api_error_response('Failed to fetch consents', status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     @action(detail=False, methods=['get'], url_path='fiduciary/(?P<fiduciary_id>[^/.]+)')
     def by_fiduciary(self, request, fiduciary_id=None):
         """Get consents by fiduciary"""
-        consents = self.queryset.filter(fiduciary_id=fiduciary_id)
-        serializer = ConsentSerializer(consents, many=True)
-        return Response(serializer.data)
+        try:
+            validate_uuid(fiduciary_id, 'fiduciary_id')
+            consents = self.get_queryset().filter(fiduciary_id=fiduciary_id)
+            serializer = ConsentSerializer(consents, many=True)
+            return Response(serializer.data)
+        except ValidationError as e:
+            return api_error_response(str(e))
+        except Exception as e:
+            logger.error(f"Error fetching consents by fiduciary: {e}")
+            return api_error_response('Failed to fetch consents', status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     @action(detail=False, methods=['get'])
     def active(self, request):
@@ -521,6 +795,116 @@ class ConsentViewSet(viewsets.ModelViewSet):
         
         serializer = ConsentSerializer(consent)
         return Response(serializer.data)
+    
+    @action(detail=True, methods=['post'])
+    def enable(self, request, pk=None):
+        """Re-enable a revoked consent (Principal only)"""
+        consent = self.get_object()
+        
+        # Only allow principal to enable their own consent
+        if request.user.id != consent.principal.id:
+            return Response(
+                {'error': 'Only the data principal can enable this consent'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        if consent.status not in [ConsentStatusChoices.REVOKED, 'withdrawn']:
+            return Response(
+                {'error': 'Consent is not revoked or withdrawn'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Check if consent has expired
+        if consent.expires_at and consent.expires_at < timezone.now():
+            return Response(
+                {'error': 'Consent has expired and cannot be re-enabled'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            with transaction.atomic():
+                consent.status = ConsentStatusChoices.ACTIVE
+                consent.revoked_at = None
+                consent.revocation_reason = None
+                consent.save()
+                
+                # Update consent request status if exists
+                if consent.consent_request:
+                    consent.consent_request.status = ConsentStatusChoices.ACTIVE
+                    consent.consent_request.save()
+                
+                # Create audit log
+                AuditLog.objects.create(
+                    user=consent.principal,
+                    action=AuditActionChoices.CONSENT_ENABLED,
+                    entity_type='consent',
+                    entity_id=str(consent.id),
+                    details={'re_enabled_at': timezone.now().isoformat()}
+                )
+            
+            serializer = ConsentSerializer(consent)
+            return Response(serializer.data)
+            
+        except Exception as e:
+            logger.error(f"Error enabling consent: {e}")
+            return api_error_response(
+                'Failed to enable consent',
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    @action(detail=True, methods=['post'])
+    def withdraw(self, request, pk=None):
+        """Withdraw consent (same as revoke but with 'withdrawn' lifecycle state)"""
+        consent = self.get_object()
+        
+        # Only allow principal to withdraw their own consent
+        if request.user.id != consent.principal.id:
+            return Response(
+                {'error': 'Only the data principal can withdraw this consent'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        if consent.status != ConsentStatusChoices.ACTIVE:
+            return Response(
+                {'error': 'Consent is not active'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        reason = request.data.get('reason', 'User withdrawn consent')
+        
+        try:
+            with transaction.atomic():
+                consent.status = ConsentStatusChoices.REVOKED
+                consent.revoked_at = timezone.now()
+                consent.revocation_reason = reason
+                # Set lifecycle state if exists
+                if hasattr(consent, 'lifecycle_state'):
+                    consent.lifecycle_state = 'withdrawn'
+                consent.save()
+                
+                # Update consent request status
+                if consent.consent_request:
+                    consent.consent_request.status = ConsentStatusChoices.REVOKED
+                    consent.consent_request.save()
+                
+                # Create audit log
+                AuditLog.objects.create(
+                    user=consent.principal,
+                    action=AuditActionChoices.CONSENT_WITHDRAWN,
+                    entity_type='consent',
+                    entity_id=str(consent.id),
+                    details={'reason': reason}
+                )
+            
+            serializer = ConsentSerializer(consent)
+            return Response(serializer.data)
+            
+        except Exception as e:
+            logger.error(f"Error withdrawing consent: {e}")
+            return api_error_response(
+                'Failed to withdraw consent',
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 
 # ============================================
@@ -539,7 +923,9 @@ class GrievanceViewSet(viewsets.ModelViewSet):
     POST /api/grievances/{id}/assign_dpo/ - Assign DPO (DPO only)
     POST /api/grievances/{id}/resolve/ - Resolve grievance (DPO only)
     """
-    queryset = Grievance.objects.all()
+    queryset = Grievance.objects.select_related(
+        'complainant', 'against_entity', 'assigned_dpo'
+    ).all()
     serializer_class = GrievanceSerializer
     permission_classes = [IsAuthenticated]
     
@@ -549,18 +935,23 @@ class GrievanceViewSet(viewsets.ModelViewSet):
         return GrievanceSerializer
     
     def get_queryset(self):
-        """Filter based on user role"""
+        """Filter based on user role with optimized queries"""
         user = self.request.user
         if not user.is_authenticated:
             return Grievance.objects.none()
+        
+        base_qs = Grievance.objects.select_related(
+            'complainant', 'against_entity', 'assigned_dpo'
+        ).order_by('-filed_at')
+        
         # DPO sees all
         if user.role == RoleChoices.DPO:
-            return Grievance.objects.all()
+            return base_qs
         # Processor sees all
         if user.role == RoleChoices.PROCESSOR:
-            return Grievance.objects.all()
+            return base_qs
         # Others see only their grievances
-        return Grievance.objects.filter(complainant=user)
+        return base_qs.filter(complainant=user)
     
     def perform_create(self, serializer):
         # Auto-assign complainant to current user
@@ -603,23 +994,50 @@ class GrievanceViewSet(viewsets.ModelViewSet):
     
     @action(detail=True, methods=['post'])
     def assign_dpo(self, request, pk=None):
-        """Assign a DPO to a grievance"""
-        grievance = self.get_object()
-        dpo_id = request.data.get('dpo_id')
+        """Assign a DPO to a grievance and notify them"""
+        if request.user.role not in [RoleChoices.DPO, RoleChoices.PROCESSOR]:
+            return api_error_response('Not authorized', status_code=status.HTTP_403_FORBIDDEN)
         
-        if not dpo_id:
-            return Response(
-                {'error': 'dpo_id is required'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        grievance.assigned_dpo_id = dpo_id
-        grievance.status = GrievanceStatusChoices.IN_PROGRESS
-        grievance.acknowledged_at = timezone.now()
-        grievance.save()
-        
-        serializer = GrievanceSerializer(grievance)
-        return Response(serializer.data)
+        try:
+            grievance = self.get_object()
+            dpo_id = request.data.get('dpo_id')
+            
+            if not dpo_id:
+                return api_error_response('dpo_id is required', error_code='MISSING_DPO_ID')
+            
+            # Validate DPO exists and has correct role
+            try:
+                validate_uuid(dpo_id, 'dpo_id')
+                dpo = User.objects.get(id=dpo_id, role=RoleChoices.DPO)
+            except User.DoesNotExist:
+                return api_error_response('DPO not found', error_code='DPO_NOT_FOUND')
+            
+            with transaction.atomic():
+                grievance.assigned_dpo = dpo
+                grievance.status = GrievanceStatusChoices.IN_PROGRESS
+                grievance.acknowledged_at = timezone.now()
+                grievance.save()
+                
+                # Create audit log
+                create_audit_log(
+                    request=request,
+                    action='grievance_assigned',
+                    entity_type='grievance',
+                    entity_id=str(grievance.id),
+                    details={'assigned_to': str(dpo_id), 'grievance_id': grievance.grievance_id}
+                )
+            
+            # Notify assigned DPO (outside transaction)
+            notify_grievance_assigned(grievance, dpo)
+            
+            serializer = GrievanceSerializer(grievance)
+            return Response(serializer.data)
+            
+        except ValidationError as e:
+            return api_error_response(str(e))
+        except Exception as e:
+            logger.error(f"Error assigning DPO: {e}")
+            return api_error_response('Failed to assign DPO', status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     @action(detail=True, methods=['post'])
     def resolve(self, request, pk=None):
@@ -753,7 +1171,7 @@ class AuditLogViewSet(viewsets.ModelViewSet):
     GET /api/audit-logs/user/{id}/ - Get by user
     GET /api/audit-logs/entity/{type}/{id}/ - Get by entity
     """
-    queryset = AuditLog.objects.all()
+    queryset = AuditLog.objects.select_related('user').all()
     serializer_class = AuditLogSerializer
     permission_classes = [IsAuthenticated]
     http_method_names = ['get', 'post', 'head', 'options']  # No UPDATE/DELETE for audit logs
@@ -764,29 +1182,55 @@ class AuditLogViewSet(viewsets.ModelViewSet):
         return AuditLogSerializer
     
     def get_queryset(self):
-        """Filter based on user role"""
+        """Filter based on user role with optimized queries"""
         user = self.request.user
         if not user.is_authenticated:
             return AuditLog.objects.none()
+        
+        base_qs = AuditLog.objects.select_related('user').order_by('-performed_at')
+        
         # Admins see all
         if user.role in [RoleChoices.DPO, RoleChoices.PROCESSOR]:
-            return AuditLog.objects.all()
+            return base_qs
         # Others see only their logs
-        return AuditLog.objects.filter(user=user)
+        return base_qs.filter(user=user)
     
     @action(detail=False, methods=['get'], url_path='user/(?P<user_id>[^/.]+)')
     def by_user(self, request, user_id=None):
         """Get audit logs by user"""
-        logs = AuditLog.objects.filter(user_id=user_id)
-        serializer = AuditLogSerializer(logs, many=True)
-        return Response(serializer.data)
+        try:
+            # Only admins can view other users' logs
+            if request.user.role not in [RoleChoices.DPO, RoleChoices.PROCESSOR]:
+                if str(request.user.id) != user_id:
+                    return api_error_response('Not authorized', status_code=status.HTTP_403_FORBIDDEN)
+            
+            validate_uuid(user_id, 'user_id')
+            logs = self.get_queryset().filter(user_id=user_id)
+            serializer = AuditLogSerializer(logs, many=True)
+            return Response(serializer.data)
+        except ValidationError as e:
+            return api_error_response(str(e))
+        except Exception as e:
+            logger.error(f"Error fetching audit logs by user: {e}")
+            return api_error_response('Failed to fetch audit logs', status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     @action(detail=False, methods=['get'], url_path='entity/(?P<entity_type>[^/.]+)/(?P<entity_id>[^/.]+)')
     def by_entity(self, request, entity_type=None, entity_id=None):
         """Get audit logs by entity"""
-        logs = AuditLog.objects.filter(entity_type=entity_type, entity_id=entity_id)
-        serializer = AuditLogSerializer(logs, many=True)
-        return Response(serializer.data)
+        try:
+            # Only admins can view entity-specific logs
+            if request.user.role not in [RoleChoices.DPO, RoleChoices.PROCESSOR]:
+                return api_error_response('Not authorized', status_code=status.HTTP_403_FORBIDDEN)
+            
+            entity_type = sanitize_text(entity_type, 50)
+            entity_id = sanitize_text(entity_id, 100)
+            
+            logs = self.get_queryset().filter(entity_type=entity_type, entity_id=entity_id)
+            serializer = AuditLogSerializer(logs, many=True)
+            return Response(serializer.data)
+        except Exception as e:
+            logger.error(f"Error fetching audit logs by entity: {e}")
+            return api_error_response('Failed to fetch audit logs', status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 # ============================================
@@ -818,7 +1262,9 @@ class DataPrincipalRightsRequestViewSet(viewsets.ModelViewSet):
     POST /api/rights-requests/withdraw-all/ - Withdraw all consents (Principal)
     POST /api/rights-requests/request-erasure/ - Request data erasure (Principal)
     """
-    queryset = DataPrincipalRightsRequest.objects.all()
+    queryset = DataPrincipalRightsRequest.objects.select_related(
+        'principal', 'fiduciary', 'processed_by'
+    ).all()
     serializer_class = DataPrincipalRightsRequestSerializer
     permission_classes = [IsAuthenticated]
     
@@ -828,18 +1274,23 @@ class DataPrincipalRightsRequestViewSet(viewsets.ModelViewSet):
         return DataPrincipalRightsRequestSerializer
     
     def get_queryset(self):
-        """Filter based on user role"""
+        """Filter based on user role with optimized queries"""
         user = self.request.user
         if not user.is_authenticated:
             return DataPrincipalRightsRequest.objects.none()
+        
+        base_qs = DataPrincipalRightsRequest.objects.select_related(
+            'principal', 'fiduciary', 'processed_by'
+        ).order_by('-created_at')
+        
         # Admins see all
         if user.role in [RoleChoices.DPO, RoleChoices.PROCESSOR]:
-            return DataPrincipalRightsRequest.objects.all()
+            return base_qs
         # Fiduciaries see requests against them
         if user.role == RoleChoices.FIDUCIARY:
-            return DataPrincipalRightsRequest.objects.filter(fiduciary=user)
+            return base_qs.filter(fiduciary=user)
         # Principals see their own requests
-        return DataPrincipalRightsRequest.objects.filter(principal=user)
+        return base_qs.filter(principal=user)
     
     def perform_create(self, serializer):
         """Create rights request and log it"""
@@ -1396,6 +1847,107 @@ def dashboard_stats(request):
     
     serializer = DashboardStatsSerializer(stats)
     return Response(serializer.data)
+
+
+# ============================================
+# NOTIFICATION VIEWSET
+# ============================================
+class NotificationViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for managing in-app notifications.
+    
+    Endpoints:
+    - GET /api/notifications/ - List user's notifications
+    - GET /api/notifications/{id}/ - Get notification detail
+    - POST /api/notifications/{id}/mark_read/ - Mark as read
+    - POST /api/notifications/mark_all_read/ - Mark all as read
+    - GET /api/notifications/unread_count/ - Get unread count
+    - DELETE /api/notifications/{id}/ - Delete notification
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get_serializer_class(self):
+        if self.action == 'create':
+            return NotificationCreateSerializer
+        return NotificationSerializer
+    
+    def get_queryset(self):
+        """Filter notifications for current user only with optimized queries"""
+        user = self.request.user
+        queryset = Notification.objects.filter(user=user).order_by('-created_at')
+        
+        # Optional filters
+        is_read = self.request.query_params.get('is_read')
+        notification_type = self.request.query_params.get('type')
+        
+        if is_read is not None:
+            queryset = queryset.filter(is_read=is_read.lower() == 'true')
+        
+        if notification_type:
+            queryset = queryset.filter(notification_type=notification_type)
+        
+        return queryset
+    
+    @action(detail=True, methods=['post'])
+    def mark_read(self, request, pk=None):
+        """Mark a specific notification as read"""
+        try:
+            notification = self.get_object()
+            notification.mark_as_read()
+            return Response({
+                'message': 'Notification marked as read',
+                'notification': NotificationSerializer(notification).data
+            })
+        except Exception as e:
+            logger.error(f"Error marking notification as read: {e}")
+            return api_error_response('Failed to mark notification as read', status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @action(detail=False, methods=['post'])
+    def mark_all_read(self, request):
+        """Mark all notifications as read for current user"""
+        try:
+            count = Notification.mark_all_as_read(request.user)
+            return Response({
+                'message': 'All notifications marked as read',
+                'count': 0
+            })
+        except Exception as e:
+            logger.error(f"Error marking all notifications as read: {e}")
+            return api_error_response('Failed to mark notifications as read', status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @action(detail=False, methods=['get'])
+    def unread_count(self, request):
+        """Get count of unread notifications"""
+        try:
+            count = Notification.get_unread_count(request.user)
+            return Response({'unread_count': count})
+        except Exception as e:
+            logger.error(f"Error getting unread count: {e}")
+            return Response({'unread_count': 0})
+    
+    @action(detail=False, methods=['get'])
+    def recent(self, request):
+        """Get recent notifications (last 10)"""
+        try:
+            notifications = self.get_queryset()[:10]
+            serializer = NotificationSerializer(notifications, many=True)
+            return Response(serializer.data)
+        except Exception as e:
+            logger.error(f"Error getting recent notifications: {e}")
+            return Response([])
+    
+    @action(detail=False, methods=['delete'])
+    def clear_all(self, request):
+        """Delete all read notifications"""
+        try:
+            deleted_count, _ = Notification.objects.filter(
+                user=request.user,
+                is_read=True
+            ).delete()
+            return Response({'message': f'Deleted {deleted_count} notifications'})
+        except Exception as e:
+            logger.error(f"Error clearing notifications: {e}")
+            return api_error_response('Failed to clear notifications', status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 # ============================================

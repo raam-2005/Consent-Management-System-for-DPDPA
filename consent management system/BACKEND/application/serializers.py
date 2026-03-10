@@ -10,11 +10,11 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from .models import (
     User, Purpose, ConsentRequest, Consent, Grievance, AuditLog,
-    DataPrincipalRightsRequest,
+    DataPrincipalRightsRequest, Notification,
     RoleChoices, ConsentStatusChoices, CMSStatusChoices,
     GrievanceStatusChoices, GrievancePriorityChoices,
     DataRightsRequestTypeChoices, DataRightsRequestStatusChoices,
-    ConsentLifecycleChoices
+    ConsentLifecycleChoices, NotificationTypeChoices
 )
 
 
@@ -120,7 +120,7 @@ class ConsentRequestSerializer(serializers.ModelSerializer):
 
 
 class ConsentRequestCreateSerializer(serializers.ModelSerializer):
-    """Serializer for creating consent requests"""
+    """Serializer for creating consent requests (fiduciary is auto-assigned from authenticated user)"""
     
     class Meta:
         model = ConsentRequest
@@ -128,6 +128,9 @@ class ConsentRequestCreateSerializer(serializers.ModelSerializer):
             'fiduciary', 'principal', 'purpose',
             'data_requested', 'notes', 'expires_at'
         ]
+        extra_kwargs = {
+            'fiduciary': {'required': False}  # Auto-assigned from authenticated user
+        }
 
 
 # ============================================
@@ -183,7 +186,7 @@ class GrievanceSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'grievance_id',
             'complainant', 'complainant_details',
-            'against_entity', 'against_entity_details',
+            'against_entity', 'against_entity_details', 'against_entity_name',
             'assigned_dpo', 'assigned_dpo_details',
             'subject', 'description', 'category',
             'priority', 'priority_display',
@@ -205,12 +208,12 @@ class GrievanceSerializer(serializers.ModelSerializer):
 
 
 class GrievanceCreateSerializer(serializers.ModelSerializer):
-    """Serializer for creating grievances"""
+    """Serializer for creating grievances (complainant is auto-assigned)"""
     
     class Meta:
         model = Grievance
         fields = [
-            'complainant', 'against_entity',
+            'against_entity', 'against_entity_name',
             'subject', 'description', 'category', 'priority'
         ]
 
@@ -260,6 +263,10 @@ class DataPrincipalRightsRequestCreateSerializer(serializers.ModelSerializer):
             'principal', 'fiduciary', 'request_type',
             'description', 'data_to_correct'
         ]
+        extra_kwargs = {
+            'principal': {'required': False},
+            'fiduciary': {'required': False},
+        }
     
     def validate(self, attrs):
         # Validate that correction requests have data_to_correct
@@ -511,3 +518,52 @@ class ChangePasswordSerializer(serializers.Serializer):
                 "new_password": "New password must be different from old password"
             })
         return attrs
+
+
+# ============================================
+# NOTIFICATION SERIALIZERS
+# ============================================
+class NotificationSerializer(serializers.ModelSerializer):
+    """Serializer for Notification model"""
+    notification_type_display = serializers.CharField(
+        source='get_notification_type_display',
+        read_only=True
+    )
+    priority_display = serializers.CharField(
+        source='get_priority_display',
+        read_only=True
+    )
+    user_details = UserMinimalSerializer(source='user', read_only=True)
+    
+    class Meta:
+        model = Notification
+        fields = [
+            'id', 'user', 'user_details',
+            'notification_type', 'notification_type_display',
+            'title', 'message',
+            'entity_type', 'entity_id',
+            'is_read', 'read_at',
+            'action_url', 'priority', 'priority_display',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = [
+            'id', 'notification_type_display', 'priority_display',
+            'read_at', 'created_at', 'updated_at'
+        ]
+
+
+class NotificationCreateSerializer(serializers.ModelSerializer):
+    """Serializer for creating notifications"""
+    
+    class Meta:
+        model = Notification
+        fields = [
+            'user', 'notification_type', 'title', 'message',
+            'entity_type', 'entity_id', 'action_url', 'priority'
+        ]
+    
+    def validate_user(self, value):
+        """Validate user exists"""
+        if not User.objects.filter(id=value.id).exists():
+            raise serializers.ValidationError("User does not exist")
+        return value

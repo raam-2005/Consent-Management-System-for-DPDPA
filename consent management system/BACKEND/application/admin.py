@@ -8,7 +8,7 @@ from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from .models import (
     User, Purpose, ConsentRequest, Consent, Grievance, AuditLog,
-    DataPrincipalRightsRequest
+    DataPrincipalRightsRequest, Notification
 )
 
 
@@ -115,5 +115,35 @@ class DataPrincipalRightsRequestAdmin(admin.ModelAdmin):
         }),
         ('SLA', {
             'fields': ('sla_deadline', 'submitted_at')
+        }),
+    )
+
+
+@admin.register(Notification)
+class NotificationAdmin(admin.ModelAdmin):
+    """Notification Admin"""
+    list_display = [
+        'title', 'user', 'notification_type', 'priority',
+        'is_read', 'created_at'
+    ]
+    list_filter = ['notification_type', 'priority', 'is_read']
+    search_fields = ['title', 'message', 'user__email', 'user__full_name']
+    ordering = ['-created_at']
+    readonly_fields = ['read_at', 'created_at', 'updated_at']
+    
+    fieldsets = (
+        ('Notification Info', {
+            'fields': ('user', 'notification_type', 'title', 'message', 'priority')
+        }),
+        ('Status', {
+            'fields': ('is_read', 'read_at')
+        }),
+        ('Related Entity', {
+            'fields': ('entity_type', 'entity_id', 'action_url'),
+            'classes': ('collapse',)
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
         }),
     )
