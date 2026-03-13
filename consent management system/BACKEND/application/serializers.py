@@ -186,7 +186,7 @@ class GrievanceSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'grievance_id',
             'complainant', 'complainant_details',
-            'against_entity', 'against_entity_details', 'against_entity_name',
+            'against_entity', 'against_entity_details',
             'assigned_dpo', 'assigned_dpo_details',
             'subject', 'description', 'category',
             'priority', 'priority_display',
@@ -213,7 +213,7 @@ class GrievanceCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Grievance
         fields = [
-            'against_entity', 'against_entity_name',
+            'against_entity',
             'subject', 'description', 'category', 'priority'
         ]
 

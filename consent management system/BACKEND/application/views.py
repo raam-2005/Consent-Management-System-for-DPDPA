@@ -276,6 +276,24 @@ class UserViewSet(viewsets.ModelViewSet):
         users = User.objects.filter(role=RoleChoices.FIDUCIARY)
         serializer = UserSerializer(users, many=True)
         return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'], url_path='lookup-by-email')
+    def lookup_by_email(self, request):
+        """Lookup a data principal by email address"""
+        email = request.query_params.get('email', '').strip().lower()
+        
+        if not email:
+            return api_error_response('Email parameter is required', status_code=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            user = User.objects.get(email__iexact=email, role=RoleChoices.PRINCIPAL)
+            serializer = UserSerializer(user)
+            return Response(serializer.data)
+        except User.DoesNotExist:
+            return api_error_response(
+                f'No Data Principal found with email: {email}',
+                status_code=status.HTTP_404_NOT_FOUND
+            )
 
 
 # ============================================
@@ -370,6 +388,14 @@ class ConsentRequestViewSet(viewsets.ModelViewSet):
         if self.action == 'create':
             return ConsentRequestCreateSerializer
         return ConsentRequestSerializer
+    
+    def perform_create(self, serializer):
+        """Auto-assign fiduciary to current user when creating consent request"""
+        user = self.request.user
+        if user.role == RoleChoices.FIDUCIARY:
+            serializer.save(fiduciary=user)
+        else:
+            serializer.save()
     
     def get_queryset(self):
         """Filter based on user role with optimized queries"""
@@ -894,7 +920,27 @@ class GrievanceViewSet(viewsets.ModelViewSet):
         # Processor sees all
         if user.role == RoleChoices.PROCESSOR:
             return base_qs
-        # Others see only their grievances
+        # Fiduciaries need inbound complaint reports (filed against their org)
+        if user.role == RoleChoices.FIDUCIARY:
+            related_principals_from_requests = ConsentRequest.objects.filter(
+                fiduciary=user
+            ).values_list('principal_id', flat=True)
+            related_principals_from_consents = Consent.objects.filter(
+                fiduciary=user
+            ).values_list('principal_id', flat=True)
+
+            return base_qs.filter(
+                Q(complainant=user)
+                | Q(against_entity=user)
+                | (
+                    Q(against_entity__isnull=True)
+                    & (
+                        Q(complainant_id__in=related_principals_from_requests)
+                        | Q(complainant_id__in=related_principals_from_consents)
+                    )
+                )
+            ).distinct()
+        # Principals and other roles see only grievances they filed
         return base_qs.filter(complainant=user)
     
     def perform_create(self, serializer):
