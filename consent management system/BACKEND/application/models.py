@@ -144,6 +144,7 @@ class User(AbstractUser, TimestampedModel):
         default=RoleChoices.PRINCIPAL
     )
     full_name = models.CharField(max_length=255, blank=True, null=True)
+    aadhaar_number = models.CharField(max_length=12, blank=True, null=True)
     phone = models.CharField(max_length=20, blank=True, null=True)
     address = models.TextField(blank=True, null=True)
     

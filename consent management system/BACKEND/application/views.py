@@ -16,8 +16,10 @@ from rest_framework.decorators import action, api_view, permission_classes as pe
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny, BasePermission
 from django.utils import timezone
+from django.core.cache import cache
 from django.db.models import Count, Q
 from datetime import timedelta
+import uuid
 
 from .models import (
     User, Purpose, ConsentRequest, Consent, Grievance, AuditLog,
@@ -1500,6 +1502,14 @@ class DataPrincipalRightsRequestViewSet(viewsets.ModelViewSet):
         # Revoke all consents
         for consent in active_consents:
             consent.revoke(reason=reason)
+
+            # Keep linked consent-request state in sync so fiduciary dashboards
+            # reflect withdrawals in request-based summaries.
+            if consent.consent_request:
+                consent.consent_request.status = ConsentStatusChoices.REVOKED
+                consent.consent_request.responded_at = timezone.now()
+                consent.consent_request.save()
+
             log_consent_revoked(request, consent, reason)
         
         # Create rights request record
@@ -1973,10 +1983,82 @@ class CustomTokenObtainPairView(TokenObtainPairView):
     Custom login view that returns JWT tokens + user data.
     
     POST /api/auth/login/
-    Body: { "email": "user@example.com", "password": "password" }
-    Response: { "access": "...", "refresh": "...", "user": {...} }
+    Body: { "email": "user@example.com", "password": "password", "aadhaar_number": "123412341234" }
+    Response (principal): { "otp_required": true, "login_challenge_id": "...", "otp_hint": "12345" }
+    Response (others): { "access": "...", "refresh": "...", "user": {...} }
     """
     serializer_class = CustomTokenObtainPairSerializer
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        user = serializer.user
+        if user.role == RoleChoices.PRINCIPAL:
+            challenge_id = str(uuid.uuid4())
+            otp_code = '12345'  # Demo OTP as requested for sample flow.
+            cache.set(
+                f'principal_login_otp:{challenge_id}',
+                {
+                    'user_id': str(user.id),
+                    'otp_code': otp_code,
+                },
+                timeout=300,
+            )
+            return Response({
+                'otp_required': True,
+                'login_challenge_id': challenge_id,
+                'otp_hint': otp_code,
+                'message': 'OTP has been sent. Please verify to complete login.',
+            })
+
+        return Response(serializer.validated_data)
+
+
+class VerifyPrincipalOtpView(APIView):
+    """Verify principal OTP and issue JWT tokens."""
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        challenge_id = (request.data.get('login_challenge_id') or '').strip()
+        otp_code = (request.data.get('otp_code') or '').strip()
+
+        if not challenge_id:
+            return Response({'error': 'login_challenge_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not otp_code:
+            return Response({'error': 'otp_code is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        challenge_data = cache.get(f'principal_login_otp:{challenge_id}')
+        if not challenge_data:
+            return Response({'error': 'OTP expired or invalid challenge'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if otp_code != challenge_data.get('otp_code'):
+            return Response({'error': 'Invalid OTP'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            user = User.objects.get(id=challenge_data.get('user_id'))
+        except User.DoesNotExist:
+            return Response({'error': 'User not found'}, status=status.HTTP_400_BAD_REQUEST)
+
+        token = CustomTokenObtainPairSerializer.get_token(user)
+        cache.delete(f'principal_login_otp:{challenge_id}')
+
+        return Response({
+            'refresh': str(token),
+            'access': str(token.access_token),
+            'user': {
+                'id': str(user.id),
+                'email': user.email,
+                'username': user.username,
+                'role': user.role,
+                'role_display': user.role_display,
+                'full_name': user.full_name,
+                'aadhaar_number': user.aadhaar_number,
+                'organization_name': user.organization_name,
+                'avatar_url': user.avatar_url,
+            }
+        })
 
 
 class RegisterView(APIView):

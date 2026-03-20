@@ -37,7 +37,7 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             'id', 'email', 'username', 'role', 'role_display',
-            'full_name', 'phone', 'address',
+            'full_name', 'aadhaar_number', 'phone', 'address',
             'organization_name', 'organization_id',
             'avatar_url', 'is_active',
             'created_at', 'updated_at'
@@ -53,10 +53,18 @@ class UserCreateSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             'id', 'email', 'username', 'password', 'role',
-            'full_name', 'phone', 'address',
+            'full_name', 'aadhaar_number', 'phone', 'address',
             'organization_name', 'organization_id', 'avatar_url'
         ]
         read_only_fields = ['id']
+
+    def validate_aadhaar_number(self, value):
+        if not value:
+            return value
+        aadhaar = value.strip()
+        if not aadhaar.isdigit() or len(aadhaar) != 12:
+            raise serializers.ValidationError('Aadhaar number must be exactly 12 digits.')
+        return aadhaar
     
     def create(self, validated_data):
         password = validated_data.pop('password')
@@ -83,6 +91,10 @@ class PurposeSerializer(serializers.ModelSerializer):
             'is_active', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'fiduciary_name', 'created_at', 'updated_at']
+        extra_kwargs = {
+            # Fiduciary is auto-assigned in PurposeViewSet.perform_create for fiduciary users.
+            'fiduciary': {'required': False}
+        }
 
 
 # ============================================
@@ -120,7 +132,7 @@ class ConsentRequestSerializer(serializers.ModelSerializer):
 
 
 class ConsentRequestCreateSerializer(serializers.ModelSerializer):
-    """Serializer for creating consent requests (fiduciary is auto-assigned from authenticated user)"""
+    """Serializer for creating consent requests"""
     
     class Meta:
         model = ConsentRequest
@@ -129,7 +141,8 @@ class ConsentRequestCreateSerializer(serializers.ModelSerializer):
             'data_requested', 'notes', 'expires_at'
         ]
         extra_kwargs = {
-            'fiduciary': {'required': False}  # Auto-assigned from authenticated user
+            # Fiduciary is auto-assigned in ConsentRequestViewSet.perform_create for fiduciary users.
+            'fiduciary': {'required': False}
         }
 
 
@@ -263,10 +276,6 @@ class DataPrincipalRightsRequestCreateSerializer(serializers.ModelSerializer):
             'principal', 'fiduciary', 'request_type',
             'description', 'data_to_correct'
         ]
-        extra_kwargs = {
-            'principal': {'required': False},
-            'fiduciary': {'required': False},
-        }
     
     def validate(self, attrs):
         # Validate that correction requests have data_to_correct
@@ -407,6 +416,7 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     """Custom JWT token serializer that includes user info in response"""
+    aadhaar_number = serializers.CharField(write_only=True, required=False, allow_blank=True)
     
     @classmethod
     def get_token(cls, user):
@@ -418,7 +428,32 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         return token
     
     def validate(self, attrs):
+        aadhaar_number = (attrs.pop('aadhaar_number', '') or '').strip()
         data = super().validate(attrs)
+
+        if self.user.role == RoleChoices.PRINCIPAL:
+            if not aadhaar_number:
+                raise serializers.ValidationError({
+                    'aadhaar_number': 'Aadhaar number is required for Data Principal login.'
+                })
+
+            if not aadhaar_number.isdigit() or len(aadhaar_number) != 12:
+                raise serializers.ValidationError({
+                    'aadhaar_number': 'Aadhaar number must be exactly 12 digits.'
+                })
+
+            saved_aadhaar = (self.user.aadhaar_number or '').strip()
+            if not saved_aadhaar:
+                # Backward compatibility for existing principal accounts: bind Aadhaar on first login.
+                self.user.aadhaar_number = aadhaar_number
+                self.user.save(update_fields=['aadhaar_number'])
+                saved_aadhaar = aadhaar_number
+
+            if aadhaar_number != saved_aadhaar:
+                raise serializers.ValidationError({
+                    'aadhaar_number': 'Aadhaar verification failed.'
+                })
+
         # Add user data to response
         data['user'] = {
             'id': str(self.user.id),
@@ -437,12 +472,13 @@ class RegisterSerializer(serializers.ModelSerializer):
     """Serializer for user registration with strong password validation"""
     password = serializers.CharField(write_only=True, min_length=8)
     password_confirm = serializers.CharField(write_only=True, min_length=8)
+    aadhaar_number = serializers.CharField(write_only=True, required=False, allow_blank=True)
     
     class Meta:
         model = User
         fields = [
             'email', 'username', 'password', 'password_confirm',
-            'role', 'full_name', 'phone', 'organization_name', 'organization_id'
+            'role', 'full_name', 'aadhaar_number', 'phone', 'organization_name', 'organization_id'
         ]
     
     def validate_password(self, value):
@@ -470,10 +506,23 @@ class RegisterSerializer(serializers.ModelSerializer):
                 "Username can only contain letters, numbers, and underscores."
             )
         return value
+
+    def validate_aadhaar_number(self, value):
+        if not value:
+            return value
+        aadhaar = value.strip()
+        if not aadhaar.isdigit() or len(aadhaar) != 12:
+            raise serializers.ValidationError('Aadhaar number must be exactly 12 digits.')
+        return aadhaar
     
     def validate(self, attrs):
         if attrs['password'] != attrs['password_confirm']:
             raise serializers.ValidationError({"password_confirm": "Passwords do not match"})
+
+        if attrs.get('role') == RoleChoices.PRINCIPAL and not attrs.get('aadhaar_number'):
+            raise serializers.ValidationError({
+                'aadhaar_number': 'Aadhaar number is required for Data Principal registration.'
+            })
         
         # Additional validation for fiduciaries
         if attrs.get('role') == RoleChoices.FIDUCIARY:

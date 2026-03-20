@@ -28,6 +28,7 @@ urlpatterns = [
     # AUTHENTICATION ENDPOINTS
     # ============================================
     path('auth/login/', views.CustomTokenObtainPairView.as_view(), name='token-obtain'),
+    path('auth/verify-principal-otp/', views.VerifyPrincipalOtpView.as_view(), name='verify-principal-otp'),
     path('auth/refresh/', TokenRefreshView.as_view(), name='token-refresh'),
     path('auth/register/', views.RegisterView.as_view(), name='register'),
     path('auth/me/', views.CurrentUserView.as_view(), name='current-user'),
