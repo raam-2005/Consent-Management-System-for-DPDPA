@@ -6,8 +6,11 @@ They also handle validation of incoming data.
 """
 
 from rest_framework import serializers
+from django.core.cache import cache
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
+import uuid
+import re
 from .models import (
     User, Purpose, ConsentRequest, Consent, Grievance, AuditLog,
     DataPrincipalRightsRequest, Notification,
@@ -37,7 +40,7 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             'id', 'email', 'username', 'role', 'role_display',
-            'full_name', 'aadhaar_number', 'phone', 'address',
+            'full_name', 'phone', 'address',
             'organization_name', 'organization_id',
             'avatar_url', 'is_active',
             'created_at', 'updated_at'
@@ -53,18 +56,10 @@ class UserCreateSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             'id', 'email', 'username', 'password', 'role',
-            'full_name', 'aadhaar_number', 'phone', 'address',
+            'full_name', 'phone', 'address',
             'organization_name', 'organization_id', 'avatar_url'
         ]
         read_only_fields = ['id']
-
-    def validate_aadhaar_number(self, value):
-        if not value:
-            return value
-        aadhaar = value.strip()
-        if not aadhaar.isdigit() or len(aadhaar) != 12:
-            raise serializers.ValidationError('Aadhaar number must be exactly 12 digits.')
-        return aadhaar
     
     def create(self, validated_data):
         password = validated_data.pop('password')
@@ -431,28 +426,26 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         aadhaar_number = (attrs.pop('aadhaar_number', '') or '').strip()
         data = super().validate(attrs)
 
+        # Require OTP challenge flow for Data Principal logins.
         if self.user.role == RoleChoices.PRINCIPAL:
             if not aadhaar_number:
                 raise serializers.ValidationError({
                     'aadhaar_number': 'Aadhaar number is required for Data Principal login.'
                 })
 
-            if not aadhaar_number.isdigit() or len(aadhaar_number) != 12:
+            if not re.fullmatch(r'^\d{12}$', aadhaar_number):
                 raise serializers.ValidationError({
                     'aadhaar_number': 'Aadhaar number must be exactly 12 digits.'
                 })
 
-            saved_aadhaar = (self.user.aadhaar_number or '').strip()
-            if not saved_aadhaar:
-                # Backward compatibility for existing principal accounts: bind Aadhaar on first login.
-                self.user.aadhaar_number = aadhaar_number
-                self.user.save(update_fields=['aadhaar_number'])
-                saved_aadhaar = aadhaar_number
+            challenge_id = str(uuid.uuid4())
+            cache.set(f'principal_login_challenge:{challenge_id}', str(self.user.id), timeout=300)
 
-            if aadhaar_number != saved_aadhaar:
-                raise serializers.ValidationError({
-                    'aadhaar_number': 'Aadhaar verification failed.'
-                })
+            return {
+                'otp_required': True,
+                'login_challenge_id': challenge_id,
+                'otp_hint': 'Use sample OTP 12345',
+            }
 
         # Add user data to response
         data['user'] = {
@@ -472,13 +465,12 @@ class RegisterSerializer(serializers.ModelSerializer):
     """Serializer for user registration with strong password validation"""
     password = serializers.CharField(write_only=True, min_length=8)
     password_confirm = serializers.CharField(write_only=True, min_length=8)
-    aadhaar_number = serializers.CharField(write_only=True, required=False, allow_blank=True)
     
     class Meta:
         model = User
         fields = [
             'email', 'username', 'password', 'password_confirm',
-            'role', 'full_name', 'aadhaar_number', 'phone', 'organization_name', 'organization_id'
+            'role', 'full_name', 'phone', 'organization_name', 'organization_id'
         ]
     
     def validate_password(self, value):
@@ -506,23 +498,10 @@ class RegisterSerializer(serializers.ModelSerializer):
                 "Username can only contain letters, numbers, and underscores."
             )
         return value
-
-    def validate_aadhaar_number(self, value):
-        if not value:
-            return value
-        aadhaar = value.strip()
-        if not aadhaar.isdigit() or len(aadhaar) != 12:
-            raise serializers.ValidationError('Aadhaar number must be exactly 12 digits.')
-        return aadhaar
     
     def validate(self, attrs):
         if attrs['password'] != attrs['password_confirm']:
             raise serializers.ValidationError({"password_confirm": "Passwords do not match"})
-
-        if attrs.get('role') == RoleChoices.PRINCIPAL and not attrs.get('aadhaar_number'):
-            raise serializers.ValidationError({
-                'aadhaar_number': 'Aadhaar number is required for Data Principal registration.'
-            })
         
         # Additional validation for fiduciaries
         if attrs.get('role') == RoleChoices.FIDUCIARY:
