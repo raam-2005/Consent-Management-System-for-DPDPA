@@ -467,6 +467,37 @@ class ConsentRequestViewSet(viewsets.ModelViewSet):
         serializer = ConsentRequestSerializer(requests, many=True)
         return Response(serializer.data)
     
+    @action(detail=False, methods=['get'])
+    def lookup_principal(self, request):
+        """Lookup principal by email (for fiduciaries creating consent requests)"""
+        email = request.GET.get('email', '').strip().lower()
+        if not email:
+            return api_error_response('Email parameter is required', status_code=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            principal = User.objects.filter(
+                email=email,
+                role=RoleChoices.PRINCIPAL
+            ).first()
+            
+            if not principal:
+                return api_error_response(
+                    f'No Data Principal found with email: {email}',
+                    status_code=status.HTTP_404_NOT_FOUND
+                )
+            
+            return Response({
+                'id': str(principal.id),
+                'email': principal.email,
+                'full_name': principal.full_name
+            })
+        except Exception as e:
+            logger.error(f"Error looking up principal: {e}")
+            return api_error_response(
+                'Failed to lookup principal',
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
     @action(detail=True, methods=['post'])
     def cms_approve(self, request, pk=None):
         """CMS approves a consent request (Processor/DPO only)"""
@@ -514,38 +545,51 @@ class ConsentRequestViewSet(viewsets.ModelViewSet):
     
     @action(detail=True, methods=['post'])
     def cms_deny(self, request, pk=None):
-        """CMS denies a consent request"""
-        consent_request = self.get_object()
+        """CMS denies a consent request (Processor/DPO only)"""
+        if request.user.role not in [RoleChoices.PROCESSOR, RoleChoices.DPO]:
+            return api_error_response('Not authorized', status_code=status.HTTP_403_FORBIDDEN)
         
-        if consent_request.cms_status != CMSStatusChoices.PENDING_CMS:
-            return Response(
-                {'error': 'Request has already been reviewed'},
-                status=status.HTTP_400_BAD_REQUEST
+        try:
+            consent_request = self.get_object()
+            
+            if consent_request.cms_status != CMSStatusChoices.PENDING_CMS:
+                return api_error_response(
+                    'Request has already been reviewed',
+                    error_code='ALREADY_REVIEWED'
+                )
+            
+            # Use transaction to ensure atomicity
+            with transaction.atomic():
+                consent_request.cms_status = CMSStatusChoices.CMS_DENIED
+                consent_request.status = ConsentStatusChoices.REJECTED
+                consent_request.cms_reviewed_at = timezone.now()
+                consent_request.cms_reviewed_by = request.user
+                consent_request.cms_notes = sanitize_text(request.data.get('notes', ''))
+                consent_request.responded_at = timezone.now()
+                consent_request.save()
+                
+                # Create audit log
+                create_audit_log(
+                    request=request,
+                    action=AuditActionChoices.CONSENT_REJECTED,
+                    entity_type='consent_request',
+                    entity_id=str(consent_request.id),
+                    details={'action': 'cms_denied', 'notes': consent_request.cms_notes}
+                )
+            
+            serializer = ConsentRequestSerializer(consent_request)
+            return Response(serializer.data)
+            
+        except Exception as e:
+            logger.error(f"Error in CMS deny: {e}")
+            return api_error_response(
+                'Failed to deny request',
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-        
-        consent_request.cms_status = CMSStatusChoices.CMS_DENIED
-        consent_request.status = ConsentStatusChoices.REJECTED
-        consent_request.cms_reviewed_at = timezone.now()
-        consent_request.cms_reviewed_by_id = request.data.get('reviewer_id')
-        consent_request.cms_notes = request.data.get('notes', '')
-        consent_request.responded_at = timezone.now()
-        consent_request.save()
-        
-        # Create audit log
-        AuditLog.objects.create(
-            user_id=request.data.get('reviewer_id'),
-            action='consent_rejected',
-            entity_type='consent_request',
-            entity_id=str(consent_request.id),
-            details={'action': 'cms_denied', 'notes': consent_request.cms_notes}
-        )
-        
-        serializer = ConsentRequestSerializer(consent_request)
-        return Response(serializer.data)
     
     @action(detail=True, methods=['post'])
     def accept(self, request, pk=None):
-        """Principal accepts a consent request"""
+        """Principal accepts a consent request with provided data"""
         consent_request = self.get_object()
         
         # Verify principal is the one accepting
@@ -567,38 +611,65 @@ class ConsentRequestViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
+        # Get response data (optional for backward compatibility)
+        response_data = request.data.get('response_data', {})
+        
+        # If response_data is provided, validate that all requested data fields are provided
+        if response_data:
+            data_requested = consent_request.data_requested or []
+            missing_fields = [field for field in data_requested if field not in response_data]
+            if missing_fields:
+                return api_error_response(
+                    f'Missing required data fields: {", ".join(missing_fields)}',
+                    error_code='INCOMPLETE_RESPONSE_DATA'
+                )
+        
         try:
             with transaction.atomic():
-                # Update consent request
+                # Store principal's response data (if provided)
+                if response_data:
+                    consent_request.principal_response_data = response_data
+                
                 consent_request.status = ConsentStatusChoices.ACTIVE
                 consent_request.responded_at = timezone.now()
                 consent_request.save()
                 
-                # Create Consent record
+                # Create Consent record with provided data
                 consent = Consent.objects.create(
                     consent_request=consent_request,
                     principal=consent_request.principal,
                     fiduciary=consent_request.fiduciary,
                     purpose=consent_request.purpose,
                     data_categories=consent_request.data_requested,
+                    provided_data=response_data,  # Will be empty dict if not provided
                     status=ConsentStatusChoices.ACTIVE,
                     expires_at=consent_request.expires_at
                 )
                 
                 # Create audit log
+                audit_details = {
+                    'consent_request_id': str(consent_request.id)
+                }
+                if response_data:
+                    audit_details['data_fields_provided'] = list(response_data.keys())
+                
                 AuditLog.objects.create(
                     user=consent_request.principal,
                     action=AuditActionChoices.CONSENT_GRANTED,
                     entity_type='consent',
                     entity_id=str(consent.id),
-                    details={'consent_request_id': str(consent_request.id)}
+                    details=audit_details
                 )
             
             # Send notification to fiduciary (outside transaction)
             notify_consent_approved(consent)
             
             serializer = ConsentRequestSerializer(consent_request)
-            return Response(serializer.data)
+            return Response({
+                'message': 'Consent request accepted successfully',
+                'consent_request': serializer.data,
+                'consent_id': str(consent.id)
+            })
             
         except Exception as e:
             logger.error(f"Error accepting consent request: {e}")
@@ -736,6 +807,25 @@ class ConsentViewSet(viewsets.ModelViewSet):
         consents = self.queryset.filter(status=ConsentStatusChoices.ACTIVE)
         serializer = ConsentSerializer(consents, many=True)
         return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'], url_path='by_request/(?P<request_id>[^/.]+)')
+    def by_request(self, request, request_id=None):
+        """Get consent by consent request ID"""
+        try:
+            validate_uuid(request_id, 'request_id')
+            consent = self.get_queryset().filter(consent_request_id=request_id).first()
+            if not consent:
+                return api_error_response(
+                    'Consent not found for this request',
+                    status_code=status.HTTP_404_NOT_FOUND
+                )
+            serializer = ConsentSerializer(consent)
+            return Response(serializer.data)
+        except ValidationError as e:
+            return api_error_response(str(e))
+        except Exception as e:
+            logger.error(f"Error fetching consent by request: {e}")
+            return api_error_response('Failed to fetch consent', status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     @action(detail=True, methods=['post'])
     def revoke(self, request, pk=None):

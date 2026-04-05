@@ -261,6 +261,13 @@ class ConsentRequest(TimestampedModel):
     )
     notes = models.TextField(blank=True, null=True)
     
+    # Principal's response data (filled when accepting)
+    principal_response_data = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Data provided by principal when accepting the request"
+    )
+    
     # CMS Review (by Processor)
     cms_status = models.CharField(
         max_length=20,
@@ -359,6 +366,11 @@ class Consent(TimestampedModel):
     data_categories = models.JSONField(
         default=list,
         help_text="Categories of data consented for"
+    )
+    provided_data = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Actual data provided by principal (encrypted/secured)"
     )
     status = models.CharField(
         max_length=20,

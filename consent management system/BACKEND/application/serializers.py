@@ -111,7 +111,7 @@ class ConsentRequestSerializer(serializers.ModelSerializer):
             'fiduciary', 'fiduciary_details',
             'principal', 'principal_details',
             'purpose', 'purpose_details',
-            'data_requested', 'notes',
+            'data_requested', 'notes', 'principal_response_data',
             'cms_status', 'cms_status_display',
             'cms_reviewed_by', 'cms_reviewer_details',
             'cms_reviewed_at', 'cms_notes',
@@ -141,6 +141,25 @@ class ConsentRequestCreateSerializer(serializers.ModelSerializer):
         }
 
 
+class ConsentRequestResponseSerializer(serializers.Serializer):
+    """Serializer for principal's response to consent request with data"""
+    action = serializers.ChoiceField(choices=['accept', 'reject'], required=True)
+    response_data = serializers.DictField(required=False, allow_null=True, help_text="Data provided by principal for each requested field")
+    reason = serializers.CharField(required=False, allow_blank=True, help_text="Reason for rejection (if rejecting)")
+    
+    def validate(self, attrs):
+        action = attrs.get('action')
+        response_data = attrs.get('response_data')
+        
+        # If accepting, response_data is required
+        if action == 'accept' and not response_data:
+            raise serializers.ValidationError({
+                'response_data': 'Response data is required when accepting a consent request'
+            })
+        
+        return attrs
+
+
 # ============================================
 # CONSENT SERIALIZERS
 # ============================================
@@ -161,7 +180,7 @@ class ConsentSerializer(serializers.ModelSerializer):
             'principal', 'principal_details',
             'fiduciary', 'fiduciary_details',
             'purpose', 'purpose_details',
-            'data_categories', 'status', 'status_display',
+            'data_categories', 'provided_data', 'status', 'status_display',
             'lifecycle_state', 'lifecycle_state_display',
             'granted_at', 'expires_at',
             'revoked_at', 'revocation_reason',
